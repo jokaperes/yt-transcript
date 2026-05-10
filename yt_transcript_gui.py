@@ -16,6 +16,11 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 os.environ["TQDM_DISABLE"] = "1"
+os.environ["TQDM_NO_RESIZE"] = "1"
+os.environ["PYTHONUNBUFFERED"] = "0"
+
+import faulthandler
+faulthandler.disable()
 
 from transcribe_youtube import (
     DEFAULT_MODEL,

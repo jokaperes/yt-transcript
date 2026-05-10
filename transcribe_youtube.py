@@ -351,17 +351,14 @@ def transcribe_faster(
     try:
         import threading
         import tqdm._monitor
-        class SafeTqdmMonitor(threading.Thread):
+
+        class DisabledTqdmMonitor(threading.Thread):
             daemon = True
+            _stop_event = threading.Event()
             def run(self):
-                try:
-                    while True:
-                        self._stop_event.wait(1.0)
-                        if self._stop_event.is_set():
-                            break
-                except Exception:
-                    pass
-        tqdm._monitor.TqdmMonitor = SafeTqdmMonitor
+                self._stop_event.wait(999999)
+
+        tqdm._monitor.TqdmMonitor = DisabledTqdmMonitor
         tqdm.utils.monotonic = lambda: 0
     except Exception:
         pass
