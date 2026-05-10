@@ -4,6 +4,7 @@ import json
 import shutil
 import queue
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -40,6 +41,12 @@ class App(ttk.Frame):
         self.device = tk.StringVar(value="cuda")
         self.compute_type = tk.StringVar(value="float16")
         self.status = tk.StringVar(value="Ready")
+        self.elapsed = tk.StringVar(value="Elapsed: 00:00")
+        self.detail = tk.StringVar(value="")
+        self.phase_progress = tk.DoubleVar(value=0)
+        self.total_progress = tk.DoubleVar(value=0)
+        self.started_at: float | None = None
+        self.phase_indeterminate = False
 
         self._build()
         self.root.after(100, self._drain_events)
@@ -49,7 +56,7 @@ class App(ttk.Frame):
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(7, weight=1)
+        self.rowconfigure(9, weight=1)
 
         ttk.Label(self, text="YouTube URL").grid(row=0, column=0, sticky="w", pady=(0, 8))
         ttk.Entry(self, textvariable=self.url).grid(row=0, column=1, columnspan=2, sticky="ew", pady=(0, 8))
@@ -93,17 +100,32 @@ class App(ttk.Frame):
         self.cancel_button = ttk.Button(buttons, text="Cancel", command=self._cancel, state="disabled")
         self.cancel_button.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=6)
 
-        ttk.Label(self, textvariable=self.status).grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        status_bar = ttk.Frame(self)
+        status_bar.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        status_bar.columnconfigure(0, weight=1)
+        ttk.Label(status_bar, textvariable=self.status).grid(row=0, column=0, sticky="w")
+        ttk.Label(status_bar, textvariable=self.elapsed).grid(row=0, column=1, sticky="e")
 
-        self.progress = ttk.Progressbar(self, mode="indeterminate")
-        self.progress.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        ttk.Label(self, textvariable=self.detail).grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+        ttk.Label(self, text="Current step").grid(row=7, column=0, sticky="w")
+        self.phase_bar = ttk.Progressbar(self, mode="determinate", variable=self.phase_progress, maximum=100)
+        self.phase_bar.grid(row=7, column=1, columnspan=2, sticky="ew", pady=(0, 4))
+
+        ttk.Label(self, text="Overall").grid(row=8, column=0, sticky="w")
+        self.total_bar = ttk.Progressbar(self, mode="determinate", variable=self.total_progress, maximum=100)
+        self.total_bar.grid(row=8, column=1, columnspan=2, sticky="ew", pady=(0, 8))
 
         self.log = tk.Text(self, height=18, wrap="word")
-        self.log.grid(row=7, column=0, columnspan=3, sticky="nsew")
+        self.log.grid(row=9, column=0, columnspan=3, sticky="nsew")
         self.log.configure(state="disabled")
+        self.log.tag_configure("info", foreground="#1f2937")
+        self.log.tag_configure("warning", foreground="#92400e")
+        self.log.tag_configure("error", foreground="#991b1b")
+        self.log.tag_configure("success", foreground="#166534")
 
         actions = ttk.Frame(self)
-        actions.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        actions.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         actions.columnconfigure(0, weight=1)
         ttk.Button(actions, text="Open output folder", command=self._open_output).grid(row=0, column=1, sticky="e")
 
@@ -120,19 +142,18 @@ class App(ttk.Frame):
         if file_path:
             self.cookies.set(file_path)
 
-    def _append_log(self, message: str) -> None:
+    def _append_log(self, message: str, level: str = "info") -> None:
         self.log.configure(state="normal")
-        self.log.insert("end", message.rstrip() + "\n")
+        self.log.insert("end", message.rstrip() + "\n", level)
         self.log.see("end")
         self.log.configure(state="disabled")
 
     def _set_busy(self, busy: bool) -> None:
         self.start_button.configure(state="disabled" if busy else "normal")
         self.cancel_button.configure(state="normal" if busy else "disabled")
-        if busy:
-            self.progress.start(10)
-        else:
-            self.progress.stop()
+        if not busy:
+            self._set_phase_indeterminate(False)
+            self.phase_progress.set(0)
 
     def _start(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -153,6 +174,10 @@ class App(ttk.Frame):
         if not shutil.which("node"):
             self._append_log("Node.js was not found. Some YouTube videos may fail player challenge solving without it.")
         self.cancel_requested.clear()
+        self.started_at = time.monotonic()
+        self.phase_progress.set(0)
+        self.total_progress.set(0)
+        self.detail.set("Preparing")
         self._set_busy(True)
         self.status.set("Running")
         self._append_log("Starting transcription")
@@ -174,15 +199,18 @@ class App(ttk.Frame):
             compute_type = self.compute_type.get().strip() or "float16"
 
             self.events.put(("log", f"Downloading audio: {url}"))
+            self.events.put(("progress", ("download", None, "Starting download")))
             audio_path, info = download_audio(
                 url,
                 output_dir,
                 cookies,
                 None,
                 log=lambda message: self.events.put(("log", message)),
+                progress=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
                 stop_requested=self.cancel_requested.is_set,
             )
             self.events.put(("log", f"Audio saved: {audio_path}"))
+            self.events.put(("progress", ("download", 100.0, "Audio saved")))
             self.events.put(("log", f"Loading model: {model} on {device} ({compute_type})"))
 
             if device == "cpu":
@@ -194,6 +222,7 @@ class App(ttk.Frame):
                     "int8",
                     5,
                     log=lambda message: self.events.put(("log", message)),
+                    progress=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
                     stop_requested=self.cancel_requested.is_set,
                 )
             else:
@@ -205,6 +234,7 @@ class App(ttk.Frame):
                     compute_type,
                     5,
                     log=lambda message: self.events.put(("log", message)),
+                    progress=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
                     stop_requested=self.cancel_requested.is_set,
                 )
             if self.cancel_requested.is_set():
@@ -213,6 +243,7 @@ class App(ttk.Frame):
 
             title = safe_name(info.get("title") or audio_path.stem)
             stem = output_dir / title
+            self.events.put(("progress", ("write", 0.0, "Writing transcript files")))
             write_txt(stem.with_suffix(".pt.txt"), text)
             write_srt(stem.with_suffix(".pt.srt"), segments)
             write_vtt(stem.with_suffix(".pt.vtt"), segments)
@@ -236,6 +267,7 @@ class App(ttk.Frame):
                 + "\n",
                 encoding="utf-8",
             )
+            self.events.put(("progress", ("write", 100.0, "Files written")))
             self.events.put(("done", [stem.with_suffix(".pt.txt"), stem.with_suffix(".pt.srt"), stem.with_suffix(".pt.vtt")]))
         except Exception as exc:
             self.events.put(("error", str(exc)))
@@ -245,22 +277,84 @@ class App(ttk.Frame):
             while True:
                 event, payload = self.events.get_nowait()
                 if event == "log":
-                    self._append_log(str(payload))
+                    message = str(payload)
+                    level = "info"
+                    if "WARNING:" in message:
+                        level = "warning"
+                    if "ERROR:" in message or "failed" in message.lower():
+                        level = "error"
+                    self._append_log(message, level)
+                elif event == "progress":
+                    phase, percent, detail = payload
+                    self._update_progress(str(phase), percent, str(detail))
                 elif event == "done":
                     self._set_busy(False)
                     self.status.set("Done")
-                    self._append_log("Finished")
+                    self.phase_progress.set(100)
+                    self.total_progress.set(100)
+                    self.detail.set("Finished")
+                    self._append_log("Finished", "success")
                     for path in payload:
-                        self._append_log(str(path))
+                        self._append_log(str(path), "success")
                     messagebox.showinfo("Done", "Transcript files were created.")
                 elif event == "error":
                     self._set_busy(False)
                     self.status.set("Error")
-                    self._append_log(str(payload))
+                    self._append_log(str(payload), "error")
                     messagebox.showerror("Error", str(payload))
         except queue.Empty:
             pass
+        self._update_elapsed()
         self.root.after(100, self._drain_events)
+
+    def _update_progress(self, phase: str, percent: Any, detail: str) -> None:
+        weights = {
+            "download": (0, 30),
+            "extract": (25, 10),
+            "model": (35, 20),
+            "transcribe": (55, 40),
+            "write": (95, 5),
+        }
+        labels = {
+            "download": "Downloading audio",
+            "extract": "Extracting audio",
+            "model": "Loading Whisper model",
+            "transcribe": "Transcribing",
+            "write": "Writing files",
+        }
+        self.status.set(labels.get(phase, phase.title()))
+        if percent is None:
+            self._set_phase_indeterminate(True)
+            self.detail.set(detail)
+            return
+        self._set_phase_indeterminate(False)
+        value = max(0.0, min(100.0, float(percent)))
+        self.phase_progress.set(value)
+        start, weight = weights.get(phase, (0, 0))
+        self.total_progress.set(max(self.total_progress.get(), min(100.0, start + weight * (value / 100.0))))
+        self.detail.set(f"{detail} ({value:.1f}%)")
+
+    def _set_phase_indeterminate(self, enabled: bool) -> None:
+        if enabled == self.phase_indeterminate:
+            return
+        self.phase_indeterminate = enabled
+        if enabled:
+            self.phase_bar.configure(mode="indeterminate")
+            self.phase_bar.start(10)
+        else:
+            self.phase_bar.stop()
+            self.phase_bar.configure(mode="determinate")
+
+    def _update_elapsed(self) -> None:
+        if self.started_at is None:
+            return
+        seconds = int(time.monotonic() - self.started_at)
+        minutes, secs = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            self.elapsed.set(f"Elapsed: {hours:02}:{minutes:02}:{secs:02}")
+        else:
+            self.elapsed.set(f"Elapsed: {minutes:02}:{secs:02}")
 
     def _open_output(self) -> None:
         folder = Path(self.output_dir.get()).expanduser().resolve()

@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 DEFAULT_MODEL = "large-v3-turbo"
 DOWNLOAD_TIMEOUT_SECONDS = 900
+ProgressCallback = Callable[[str, float | None, str], None]
 
 
 def run(command: list[str], capture_output: bool = False) -> str:
@@ -83,12 +84,14 @@ def download_audio(
     cookies: str | None,
     cookies_from_browser: str | None,
     log: Callable[[str], None] | None = None,
+    progress: ProgressCallback | None = None,
     stop_requested: Callable[[], bool] | None = None,
     timeout_seconds: int = DOWNLOAD_TIMEOUT_SECONDS,
 ) -> tuple[Path, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     template = str(output_dir / "%(title).120s [%(id)s].%(ext)s")
     log = log or (lambda message: None)
+    progress = progress or (lambda phase, percent, detail: None)
     stop_requested = stop_requested or (lambda: False)
     cookies = normalize_cookies_file(cookies, output_dir, log)
 
@@ -127,6 +130,7 @@ def download_audio(
     printed_paths: list[str] = []
     output_lines: list[str] = []
     log("Starting yt-dlp")
+    progress("download", None, "Starting yt-dlp")
     log(" ".join(command))
 
     try:
@@ -159,6 +163,13 @@ def download_audio(
             output_lines.append(clean)
             if clean:
                 log(clean)
+                download_match = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", clean)
+                if download_match:
+                    progress("download", float(download_match.group(1)), clean)
+                elif clean.startswith("[ExtractAudio]"):
+                    progress("extract", None, clean)
+                elif clean.startswith("[youtube]"):
+                    progress("download", None, clean)
                 if not clean.startswith("[") and not clean.startswith("WARNING:") and not clean.startswith("ERROR:"):
                     printed_paths.append(clean)
         except Empty:
@@ -172,6 +183,13 @@ def download_audio(
                     break
                 output_lines.append(clean)
                 log(clean)
+                download_match = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", clean)
+                if download_match:
+                    progress("download", float(download_match.group(1)), clean)
+                elif clean.startswith("[ExtractAudio]"):
+                    progress("extract", None, clean)
+                elif clean.startswith("[youtube]"):
+                    progress("download", None, clean)
                 if clean and not clean.startswith("[") and not clean.startswith("WARNING:") and not clean.startswith("ERROR:"):
                     printed_paths.append(clean)
             break
@@ -210,6 +228,7 @@ def download_audio(
     info: dict[str, Any] = {}
     if info_path.exists():
         info = json.loads(info_path.read_text(encoding="utf-8"))
+    progress("download", 100.0, "Audio downloaded")
 
     return audio_path, info
 
@@ -262,12 +281,16 @@ def transcribe_faster(
     compute_type: str,
     beam_size: int,
     log: Callable[[str], None] | None = None,
+    progress: ProgressCallback | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     from faster_whisper import WhisperModel
 
     log = log or (lambda message: None)
+    progress = progress or (lambda phase, percent, detail: None)
     stop_requested = stop_requested or (lambda: False)
+    duration = audio_duration_seconds(audio_path)
+    progress("model", None, f"Loading {model_name}")
     try:
         model = WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
@@ -279,6 +302,7 @@ def transcribe_faster(
             ) from exc
         raise
     log("Model loaded. Starting Whisper transcription.")
+    progress("transcribe", 0.0, "Model loaded")
     segments_iter, _ = model.transcribe(
         str(audio_path),
         language="pt",
@@ -299,9 +323,38 @@ def transcribe_faster(
             }
         )
         if index == 0 or index % 10 == 0:
-            log(f"Transcribed up to {timestamp(segment.end, vtt=True)}")
+            detail = f"Transcribed up to {timestamp(segment.end, vtt=True)}"
+            log(detail)
+            percent = min((segment.end / duration) * 100, 99.0) if duration else None
+            progress("transcribe", percent, detail)
     text = " ".join(segment["text"].strip() for segment in segments).strip()
+    progress("transcribe", 100.0, "Transcription complete")
     return text, segments
+
+
+def audio_duration_seconds(audio_path: Path) -> float | None:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(audio_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(completed.stdout.strip())
+    except Exception:
+        return None
 
 
 def main() -> int:
