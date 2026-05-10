@@ -248,7 +248,16 @@ def download_audio(
 
     audio_path = Path(printed_paths[-1]).resolve()
     if not audio_path.exists():
-        raise SystemExit(f"yt-dlp reported an audio path, but it does not exist: {audio_path}")
+        candidates = sorted(output_dir.glob("*.mp3"), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not candidates:
+            files = "\n".join(path.name for path in output_dir.glob("*"))
+            raise SystemExit(
+                f"yt-dlp reported an audio path, but it does not exist: {audio_path}\n\n"
+                f"Files currently in output folder:\n{files}"
+            )
+        fallback_path = candidates[0].resolve()
+        log(f"Reported audio path was not found. Using newest MP3 instead: {fallback_path}")
+        audio_path = fallback_path
 
     info_path = audio_path.with_suffix(".info.json")
     info: dict[str, Any] = {}
