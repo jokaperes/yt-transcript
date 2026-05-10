@@ -34,9 +34,11 @@ def run(command: list[str], capture_output: bool = False) -> str:
 
 
 def safe_name(value: str) -> str:
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", value)
     value = re.sub(r"[^\w\s.-]", "", value, flags=re.UNICODE)
     value = re.sub(r"\s+", " ", value).strip()
-    return value[:120] or "youtube-video"
+    value = value.rstrip(" .")
+    return value[:100] or "youtube-video"
 
 
 def find_ytdlp() -> list[str]:

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import datetime as dt
+import faulthandler
 import json
 import shutil
 import queue
+import sys
 import threading
 import time
+import traceback
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -20,6 +24,38 @@ from transcribe_youtube import (
     write_txt,
     write_vtt,
 )
+
+
+LOG_PATH = Path.cwd() / "yt-transcript.log"
+
+
+def file_log(message: str) -> None:
+    stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{stamp}] {message.rstrip()}\n")
+    except Exception:
+        pass
+
+
+def install_crash_handlers() -> None:
+    try:
+        fault_file = LOG_PATH.open("a", encoding="utf-8")
+        faulthandler.enable(file=fault_file)
+    except Exception:
+        pass
+
+    def excepthook(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
+        file_log("UNHANDLED EXCEPTION")
+        file_log("".join(traceback.format_exception(exc_type, exc, tb)))
+
+    def threading_hook(args: threading.ExceptHookArgs) -> None:
+        file_log(f"UNHANDLED THREAD EXCEPTION in {args.thread.name}")
+        file_log("".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+
+    sys.excepthook = excepthook
+    threading.excepthook = threading_hook
 
 
 class App(ttk.Frame):
@@ -51,6 +87,8 @@ class App(ttk.Frame):
         self.phase_indeterminate = False
 
         self._build()
+        file_log("GUI started")
+        file_log(f"Crash log path: {LOG_PATH}")
         self.root.after(100, self._drain_events)
 
     def _build(self) -> None:
@@ -145,6 +183,7 @@ class App(ttk.Frame):
             self.cookies.set(file_path)
 
     def _append_log(self, message: str, level: str = "info") -> None:
+        file_log(f"{level.upper()}: {message}")
         self.log.configure(state="normal")
         self.log.insert("end", message.rstrip() + "\n", level)
         self.log.see("end")
@@ -195,6 +234,7 @@ class App(ttk.Frame):
 
     def _run_job(self) -> None:
         try:
+            file_log("Worker started")
             url = self.url.get().strip()
             output_dir = Path(self.output_dir.get()).expanduser().resolve()
             cookies = self.cookies.get().strip() or None
@@ -275,6 +315,8 @@ class App(ttk.Frame):
             self.events.put(("progress", ("write", 100.0, "Files written")))
             self.events.put(("done", [stem.with_suffix(".pt.txt"), stem.with_suffix(".pt.srt"), stem.with_suffix(".pt.vtt")]))
         except BaseException as exc:
+            file_log("WORKER ERROR")
+            file_log(traceback.format_exc())
             self.events.put(("error", str(exc)))
 
     def _drain_events(self) -> None:
@@ -376,9 +418,20 @@ class App(ttk.Frame):
 
 
 def main() -> None:
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+    install_crash_handlers()
+    try:
+        root = tk.Tk()
+        root.report_callback_exception = lambda exc, val, tb: (
+            file_log("TK CALLBACK ERROR"),
+            file_log("".join(traceback.format_exception(exc, val, tb))),
+            messagebox.showerror("Error", str(val)),
+        )
+        App(root)
+        root.mainloop()
+    except BaseException:
+        file_log("FATAL GUI ERROR")
+        file_log(traceback.format_exc())
+        raise
 
 
 if __name__ == "__main__":
