@@ -56,6 +56,27 @@ def check_dependencies() -> list[str]:
     return issues
 
 
+def normalize_cookies_file(cookies: str | None, output_dir: Path, log: Callable[[str], None] | None = None) -> str | None:
+    if not cookies:
+        return None
+
+    source = Path(cookies).expanduser().resolve()
+    if not source.exists():
+        raise SystemExit(f"Cookies file does not exist: {source}")
+
+    text = source.read_text(encoding="utf-8", errors="replace")
+    fixed = re.sub(r"^\.youtube\.com\tFALSE\t", "youtube.com\tFALSE\t", text, flags=re.MULTILINE)
+    if fixed == text:
+        return str(source)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    normalized = output_dir / "normalized-youtube-cookies.txt"
+    normalized.write_text(fixed, encoding="utf-8")
+    if log:
+        log(f"Normalized YouTube cookies format: {normalized}")
+    return str(normalized)
+
+
 def download_audio(
     url: str,
     output_dir: Path,
@@ -104,6 +125,7 @@ def download_audio(
     output_lines: list[str] = []
     log = log or (lambda message: None)
     stop_requested = stop_requested or (lambda: False)
+    cookies = normalize_cookies_file(cookies, output_dir, log)
     log("Starting yt-dlp")
     log(" ".join(command))
 

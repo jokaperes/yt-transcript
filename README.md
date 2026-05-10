@@ -75,6 +75,8 @@ If YouTube asks for bot/sign-in confirmation, export cookies from your browser a
 yt-transcript.exe "URL" --cookies C:\path\to\cookies.txt --device cuda --model large-v3-turbo
 ```
 
+Some browser cookie exporters write YouTube host-only cookies in a format Python rejects. The app automatically writes a normalized copy inside the output folder when needed.
+
 ## Model Choice
 
 For an NVIDIA RTX 5070 with 12 GB VRAM, use:

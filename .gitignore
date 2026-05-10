@@ -5,6 +5,8 @@ __pycache__/
 # Sensitive local authentication material
 cookies.txt
 *.cookies.txt
+normalized-youtube-cookies.txt
+transcripts/normalized-youtube-cookies.txt
 
 # Downloaded media
 transcripts/*.mp3
