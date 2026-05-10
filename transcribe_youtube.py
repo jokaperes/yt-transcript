@@ -88,6 +88,9 @@ def download_audio(
 ) -> tuple[Path, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     template = str(output_dir / "%(title).120s [%(id)s].%(ext)s")
+    log = log or (lambda message: None)
+    stop_requested = stop_requested or (lambda: False)
+    cookies = normalize_cookies_file(cookies, output_dir, log)
 
     command = find_ytdlp()
 
@@ -123,9 +126,6 @@ def download_audio(
 
     printed_paths: list[str] = []
     output_lines: list[str] = []
-    log = log or (lambda message: None)
-    stop_requested = stop_requested or (lambda: False)
-    cookies = normalize_cookies_file(cookies, output_dir, log)
     log("Starting yt-dlp")
     log(" ".join(command))
 
