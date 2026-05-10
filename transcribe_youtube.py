@@ -349,15 +349,19 @@ def transcribe_faster(
     stop_requested = stop_requested or (lambda: False)
 
     try:
-        import tqdm
         import threading
-        original_run = tqdm._monitor.TqdmMonitor.run
-        def safe_run(self):
-            try:
-                original_run(self)
-            except Exception:
-                pass
-        tqdm._monitor.TqdmMonitor.run = safe_run
+        import tqdm._monitor
+        class SafeTqdmMonitor(threading.Thread):
+            daemon = True
+            def run(self):
+                try:
+                    while True:
+                        self._stop_event.wait(1.0)
+                        if self._stop_event.is_set():
+                            break
+                except Exception:
+                    pass
+        tqdm._monitor.TqdmMonitor = SafeTqdmMonitor
         tqdm.utils.monotonic = lambda: 0
     except Exception:
         pass
