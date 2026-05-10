@@ -9,9 +9,32 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable
+
+
+LOG_FILE = Path("transcribe_youtube.log")
+
+
+def log_message(level: str, message: str) -> None:
+    import datetime
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] [{level}] {message}"
+    print(line, file=sys.stderr)
+    try:
+        LOG_FILE.write_text(LOG_FILE.read_text(encoding="utf-8", errors="replace") + line + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def log_info(message: str) -> None:
+    log_message("INFO", message)
+
+
+def log_error(message: str) -> None:
+    log_message("ERROR", message)
 
 
 DEFAULT_MODEL = "large-v3-turbo"
@@ -92,7 +115,7 @@ def download_audio(
 ) -> tuple[Path, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     template = str(output_dir / "%(title).120s [%(id)s].%(ext)s")
-    log = log or (lambda message: None)
+    log = log or log_info
     progress = progress or (lambda phase, percent, detail: None)
     stop_requested = stop_requested or (lambda: False)
     cookies = normalize_cookies_file(cookies, output_dir, log)
@@ -321,7 +344,7 @@ def transcribe_faster(
     progress: ProgressCallback | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    log = log or (lambda message: None)
+    log = log or log_info
     progress = progress or (lambda phase, percent, detail: None)
     stop_requested = stop_requested or (lambda: False)
     log("Importing faster-whisper")
@@ -437,16 +460,43 @@ def main() -> int:
     paragraphs = [p.strip() for p in re.split(r'\n\n+', text) if p.strip()]
     formatted = "\n\n".join(f"## Segment {i+1}\n\n{p}" for i, p in enumerate(paragraphs))
 
-    (stem.with_suffix(".pt.txt")).write_text(formatted, encoding="utf-8")
+    try:
+        (stem.with_suffix(".pt.txt")).write_text(formatted, encoding="utf-8")
+        log_info(f"Wrote transcript: {stem.with_suffix('.pt.txt')}")
+    except Exception as exc:
+        log_error(f"Failed to write transcript: {exc}")
+        raise
 
-    audio_path.unlink(missing_ok=True)
-    info_path = stem.with_suffix(".info.json")
-    if info_path.exists():
-        info_path.unlink(missing_ok=True)
+    try:
+        audio_path.unlink(missing_ok=True)
+        log_info(f"Deleted audio: {audio_path}")
+    except Exception as exc:
+        log_error(f"Failed to delete audio {audio_path}: {exc}")
+
+    try:
+        info_path = stem.with_suffix(".info.json")
+        if info_path.exists():
+            info_path.unlink(missing_ok=True)
+            log_info(f"Deleted info: {info_path}")
+    except Exception as exc:
+        log_error(f"Failed to delete info {info_path}: {exc}")
 
     print(stem.with_suffix(".pt.txt"))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        log_info("Interrupted by user")
+        raise SystemExit(1)
+    except SystemExit as exc:
+        if exc.code != 0:
+            log_error(f"SystemExit: {exc.code}")
+        raise
+    except Exception as exc:
+        log_error(f"Unexpected error: {exc}")
+        traceback.print_exc(file=sys.stderr)
+        log_error(traceback.format_exc())
+        raise SystemExit(1)
