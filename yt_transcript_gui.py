@@ -433,41 +433,43 @@ class App(ttk.Frame):
         batch_path = exe_path.with_name("update-inplace.bat")
 
         try:
-            result = subprocess.run(
-                ["gh", "api", "repos/jokaperes/yt-transcript/releases/latest", "--jq", ".tag_name"],
-                capture_output=True, text=True, timeout=15,
+            req = urllib.request.Request(
+                "https://api.github.com/repos/jokaperes/yt-transcript/releases/tags/v1.4.1",
+                headers={"User-Agent": "yt-transcript-gui", "Accept": "application/vnd.github+json"},
             )
-            latest_tag = result.stdout.strip() or ""
-            current_tag = "v1.4.0"
-            if latest_tag == current_tag:
-                self.status.set("Up to date!")
-                self._append_log(f"Already on latest version ({current_tag})", "success")
-                return
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            assets = data.get("assets", [])
+            current_tag = "v1.4.1"
 
-            result = subprocess.run(
-                ["gh", "api", "repos/jokaperes/yt-transcript/releases/latest", "--jq", ".assets[] | select(.name == \"yt-transcript-windows.zip\") | .browser_download_url"],
-                capture_output=True, text=True, timeout=15,
-            )
-            url = result.stdout.strip()
+            zip_url = None
+            for asset in assets:
+                if asset.get("name") == "yt-transcript-windows.zip":
+                    zip_url = asset.get("browser_download_url")
+                    break
 
-            if not url:
+            if not zip_url:
                 self.status.set("Update check failed")
-                self._append_log("Could not find update URL", "error")
+                self._append_log("Could not find zip URL", "error")
                 return
 
-            self.status.set(f"Downloading {latest_tag}...")
-            self._append_log(f"Downloading {latest_tag} from {url}", "info")
+            self.status.set(f"Downloading {current_tag}...")
+            self._append_log(f"Downloading {current_tag}...", "info")
 
-            batch_content = (
-                "@echo off\n"
-                "cd /d \"%~dp0\"\n"
-                "echo Waiting for app to close...\n"
-                "powershell -Command \"Start-Sleep -Seconds 3\"\n"
-                "echo Downloading update...\n"
-                "powershell -Command \"Expand-Archive -Path 'yt-transcript-windows.zip' -DestinationPath '.' -Force\"\n"
-                "echo Update downloaded. Restart the app.\n"
-                "pause\n"
-            )
+            batch_lines = [
+                "@echo off",
+                'cd /d "%~dp0"',
+                "echo Waiting for app to close...",
+                'powershell -Command "Start-Sleep -Seconds 3"',
+                "echo Downloading update...",
+                'powershell -Command "Invoke-WebRequest -Uri "%s" -OutFile \"yt-transcript-windows.zip\""' % zip_url,
+                "echo Extracting...",
+                'powershell -Command "Expand-Archive -Path \"yt-transcript-windows.zip\" -DestinationPath \".\" -Force"',
+                "del yt-transcript-windows.zip",
+                "echo Done! Restart the app.",
+                "pause",
+            ]
+            batch_content = "\n".join(batch_lines) + "\n"
             batch_path.write_text(batch_content, encoding="utf-8")
 
             subprocess.Popen(
