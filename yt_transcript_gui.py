@@ -433,53 +433,50 @@ class App(ttk.Frame):
         batch_path = exe_path.with_name("update-inplace.bat")
 
         try:
-            req = urllib.request.Request(
-                "https://api.github.com/repos/jokaperes/yt-transcript/releases/latest",
-                headers={"User-Agent": "yt-transcript-gui"},
+            result = subprocess.run(
+                ["gh", "api", "repos/jokaperes/yt-transcript/releases/latest", "--jq", ".tag_name"],
+                capture_output=True, text=True, timeout=15,
             )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            latest_tag = data.get("tag_name", "")
-            current_tag = "v1.3.3"
-            assets = data.get("assets", [])
-
+            latest_tag = result.stdout.strip() or ""
+            current_tag = "v1.4.0"
             if latest_tag == current_tag:
                 self.status.set("Up to date!")
                 self._append_log(f"Already on latest version ({current_tag})", "success")
                 return
 
-            for asset in assets:
-                if asset.get("name") == "yt-transcript-gui.exe":
-                    url = asset.get("browser_download_url")
-                    if not url:
-                        continue
+            result = subprocess.run(
+                ["gh", "api", "repos/jokaperes/yt-transcript/releases/latest", "--jq", ".assets[] | select(.name == \"yt-transcript-windows.zip\") | .browser_download_url"],
+                capture_output=True, text=True, timeout=15,
+            )
+            url = result.stdout.strip()
 
-                    self.status.set(f"Downloading {latest_tag}...")
-                    self._append_log(f"Downloading {latest_tag} from {url}", "info")
+            if not url:
+                self.status.set("Update check failed")
+                self._append_log("Could not find update URL", "error")
+                return
 
-                    batch_content = (
-                        "@echo off\n"
-                        "echo Waiting for app to close...\n"
-                        "powershell -Command \"Start-Sleep -Seconds 3\"\n"
-                        "echo Downloading update...\n"
-                        "powershell -Command \"Invoke-WebRequest -Uri '%s' -OutFile 'yt-transcript-gui.exe'\"\n"
-                        "echo Update downloaded. Restart the app.\n"
-                        "pause\n"
-                    ) % url
-                    batch_path.write_text(batch_content, encoding="utf-8")
+            self.status.set(f"Downloading {latest_tag}...")
+            self._append_log(f"Downloading {latest_tag} from {url}", "info")
 
-                    self.status.set("Launching updater...")
-                    self._append_log("Launching background updater, restart app after download", "info")
-                    subprocess.Popen(
-                        ["cmd", "/c", "start", "", str(batch_path)],
-                        cwd=exe_path.parent,
-                        shell=True,
-                    )
-                    self.root.quit()
-                    return
+            batch_content = (
+                "@echo off\n"
+                "cd /d \"%~dp0\"\n"
+                "echo Waiting for app to close...\n"
+                "powershell -Command \"Start-Sleep -Seconds 3\"\n"
+                "echo Downloading update...\n"
+                "powershell -Command \"Expand-Archive -Path 'yt-transcript-windows.zip' -DestinationPath '.' -Force\"\n"
+                "echo Update downloaded. Restart the app.\n"
+                "pause\n"
+            )
+            batch_path.write_text(batch_content, encoding="utf-8")
 
-            self.status.set("Update check failed")
-            self._append_log("Could not find yt-transcript-gui.exe asset", "error")
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", str(batch_path)],
+                cwd=exe_path.parent,
+                shell=True,
+            )
+            self.root.quit()
+            return
 
         except Exception as exc:
             self.status.set("Update check failed")
