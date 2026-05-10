@@ -347,6 +347,13 @@ def transcribe_faster(
     log = log or log_info
     progress = progress or (lambda phase, percent, detail: None)
     stop_requested = stop_requested or (lambda: False)
+
+    try:
+        import tqdm.utils
+        tqdm.utils.monotonic = lambda: 0
+    except Exception:
+        pass
+
     log("Importing faster-whisper")
     progress("model", None, "Importing faster-whisper")
     from faster_whisper import WhisperModel
@@ -375,22 +382,29 @@ def transcribe_faster(
         vad_filter=True,
     )
     segments: list[dict[str, Any]] = []
-    for index, segment in enumerate(segments_iter):
-        if stop_requested():
-            raise SystemExit("Transcription cancelled.")
-        segments.append(
-            {
-            "id": index,
-            "start": segment.start,
-            "end": segment.end,
-            "text": segment.text,
-            }
-        )
-        if index == 0 or index % 10 == 0:
-            detail = f"Transcribed up to {timestamp(segment.end, vtt=True)}"
-            log(detail)
-            percent = min((segment.end / duration) * 100, 99.0) if duration else None
-            progress("transcribe", percent, detail)
+    try:
+        for index, segment in enumerate(segments_iter):
+            if stop_requested():
+                raise SystemExit("Transcription cancelled.")
+            segments.append(
+                {
+                "id": index,
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
+                }
+            )
+            if index == 0 or index % 10 == 0:
+                detail = f"Transcribed up to {timestamp(segment.end, vtt=True)}"
+                log(detail)
+                percent = min((segment.end / duration) * 100, 99.0) if duration else None
+                progress("transcribe", percent, detail)
+    finally:
+        try:
+            import tqdm.utils
+            tqdm.utils.monotonic = lambda: time.monotonic()
+        except Exception:
+            pass
     text = " ".join(segment["text"].strip() for segment in segments).strip()
     progress("transcribe", 100.0, "Transcription complete")
     return text, segments

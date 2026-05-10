@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import faulthandler
 import json
+import os
 import shutil
 import queue
 import sys
@@ -13,6 +14,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
+
+os.environ["TQDM_DISABLE"] = "1"
 
 from transcribe_youtube import (
     DEFAULT_MODEL,
