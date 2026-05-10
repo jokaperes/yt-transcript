@@ -433,33 +433,18 @@ def main() -> int:
         device = None if args.device == "auto" else args.device
         text, segments = transcribe_openai(audio_path, args.model, args.task, device)
 
-    write_txt(stem.with_suffix(".pt.txt"), text)
-    write_srt(stem.with_suffix(".pt.srt"), segments)
-    write_vtt(stem.with_suffix(".pt.vtt"), segments)
-    stem.with_suffix(".pt.json").write_text(
-        json.dumps(
-            {
-                "source_url": args.url,
-                "title": info.get("title"),
-                "audio": str(audio_path),
-                "language": "pt",
-                "model": args.model,
-                "backend": args.backend,
-                "device": args.device,
-                "compute_type": args.compute_type if args.backend == "faster-whisper" else None,
-                "text": text,
-                "segments": segments,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    text = " ".join(segment["text"].strip() for segment in segments).strip()
+    paragraphs = [p.strip() for p in re.split(r'\n\n+', text) if p.strip()]
+    formatted = "\n\n".join(f"## Segment {i+1}\n\n{p}" for i, p in enumerate(paragraphs))
+
+    (stem.with_suffix(".pt.txt")).write_text(formatted, encoding="utf-8")
+
+    audio_path.unlink(missing_ok=True)
+    info_path = stem.with_suffix(".info.json")
+    if info_path.exists():
+        info_path.unlink(missing_ok=True)
 
     print(stem.with_suffix(".pt.txt"))
-    print(stem.with_suffix(".pt.srt"))
-    print(stem.with_suffix(".pt.vtt"))
     return 0
 
 

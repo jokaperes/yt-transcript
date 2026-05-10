@@ -1,0 +1,4 @@
+faster-whisper
+yt-dlp
+pyinstaller
+torch --index-url https://download.pytorch.org/whl/cpu
