@@ -50,6 +50,14 @@ Outputs are written to `transcripts/`:
 Download the Windows release zip, extract it, and run:
 
 ```cmd
+yt-transcript-gui.exe
+```
+
+The GUI is the easiest option: paste the YouTube URL, optionally select a `cookies.txt` file, keep `large-v3-turbo`, `cuda`, and `float16`, then click **Transcribe**.
+
+CLI usage is also available:
+
+```cmd
 yt-transcript.exe "https://www.youtube.com/watch?v=VIDEO_ID" --device cuda --model large-v3-turbo
 ```
 
