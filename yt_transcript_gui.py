@@ -4,8 +4,9 @@ import datetime as dt
 import faulthandler
 import json
 import os
-import shutil
 import queue
+import re
+import shutil
 import sys
 import threading
 import time
@@ -298,32 +299,20 @@ class App(ttk.Frame):
 
             title = safe_name(info.get("title") or audio_path.stem)
             stem = output_dir / title
-            self.events.put(("progress", ("write", 0.0, "Writing transcript files")))
-            write_txt(stem.with_suffix(".pt.txt"), text)
-            write_srt(stem.with_suffix(".pt.srt"), segments)
-            write_vtt(stem.with_suffix(".pt.vtt"), segments)
-            stem.with_suffix(".pt.json").write_text(
-                json.dumps(
-                    {
-                        "source_url": url,
-                        "title": info.get("title"),
-                        "audio": str(audio_path),
-                        "language": "pt",
-                        "model": model,
-                        "backend": "faster-whisper",
-                        "device": device,
-                        "compute_type": "int8" if device == "cpu" else compute_type,
-                        "text": text,
-                        "segments": segments,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            self.events.put(("progress", ("write", 100.0, "Files written")))
-            self.events.put(("done", [stem.with_suffix(".pt.txt"), stem.with_suffix(".pt.srt"), stem.with_suffix(".pt.vtt")]))
+            self.events.put(("progress", ("write", 0.0, "Writing transcript file")))
+
+            clean_text = " ".join(segment["text"].strip() for segment in segments).strip()
+            paragraphs = [p.strip() for p in re.split(r'\n\n+', clean_text) if p.strip()]
+            formatted = "\n\n".join(f"## Segment {i+1}\n\n{p}" for i, p in enumerate(paragraphs))
+            (stem.with_suffix(".pt.txt")).write_text(formatted, encoding="utf-8")
+
+            try:
+                audio_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            self.events.put(("progress", ("write", 100.0, "Done")))
+            self.events.put(("done", [stem.with_suffix(".pt.txt")]))
         except BaseException as exc:
             file_log("WORKER ERROR")
             file_log(traceback.format_exc())
@@ -427,9 +416,7 @@ class App(ttk.Frame):
         os.startfile(folder)  # type: ignore[attr-defined]
 
     def _check_update(self) -> None:
-        import json
         import subprocess
-        import urllib.request
 
         self.status.set("Checking for updates...")
         self._append_log("Checking for updates...", "info")
@@ -437,27 +424,10 @@ class App(ttk.Frame):
         exe_path = Path(sys.executable).resolve()
         batch_path = exe_path.with_name("update-inplace.bat")
 
+        UPDATE_URL = "https://github.com/jokaperes/yt-transcript/releases/download/v1.4.4/yt-transcript-windows.zip"
+        current_tag = "v1.4.4"
+
         try:
-            req = urllib.request.Request(
-                "https://api.github.com/repos/jokaperes/yt-transcript/releases/tags/v1.4.1",
-                headers={"User-Agent": "yt-transcript-gui", "Accept": "application/vnd.github+json"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            assets = data.get("assets", [])
-            current_tag = "v1.4.1"
-
-            zip_url = None
-            for asset in assets:
-                if asset.get("name") == "yt-transcript-windows.zip":
-                    zip_url = asset.get("browser_download_url")
-                    break
-
-            if not zip_url:
-                self.status.set("Update check failed")
-                self._append_log("Could not find zip URL", "error")
-                return
-
             self.status.set(f"Downloading {current_tag}...")
             self._append_log(f"Downloading {current_tag}...", "info")
 
@@ -467,9 +437,9 @@ class App(ttk.Frame):
                 "echo Waiting for app to close...",
                 'powershell -Command "Start-Sleep -Seconds 3"',
                 "echo Downloading update...",
-                'powershell -Command "Invoke-WebRequest -Uri "%s" -OutFile \"yt-transcript-windows.zip\""' % zip_url,
+                'powershell -Command "Invoke-WebRequest -Uri \\"%s\\" -OutFile \\"yt-transcript-windows.zip\\""' % UPDATE_URL,
                 "echo Extracting...",
-                'powershell -Command "Expand-Archive -Path \"yt-transcript-windows.zip\" -DestinationPath \".\" -Force"',
+                'powershell -Command "Expand-Archive -Path \\"yt-transcript-windows.zip\\" -DestinationPath \\".\\" -Force"',
                 "del yt-transcript-windows.zip",
                 "echo Done! Restart the app.",
                 "pause",
