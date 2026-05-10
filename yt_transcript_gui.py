@@ -171,6 +171,8 @@ class App(ttk.Frame):
         actions.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         actions.columnconfigure(0, weight=1)
         ttk.Button(actions, text="Open output folder", command=self._open_output).grid(row=0, column=1, sticky="e")
+        self.update_button = ttk.Button(actions, text="Check for updates", command=self._check_update)
+        self.update_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
 
     def _choose_output(self) -> None:
         folder = filedialog.askdirectory(initialdir=self.output_dir.get() or str(Path.cwd()))
@@ -418,6 +420,70 @@ class App(ttk.Frame):
         import os
 
         os.startfile(folder)  # type: ignore[attr-defined]
+
+    def _check_update(self) -> None:
+        import json
+        import subprocess
+        import urllib.request
+
+        self.status.set("Checking for updates...")
+        self._append_log("Checking for updates...", "info")
+
+        exe_path = Path(sys.executable).resolve()
+        batch_path = exe_path.with_name("update-inplace.bat")
+
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/jokaperes/yt-transcript/releases/latest",
+                headers={"User-Agent": "yt-transcript-gui"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            latest_tag = data.get("tag_name", "")
+            current_tag = "v1.3.3"
+            assets = data.get("assets", [])
+
+            if latest_tag == current_tag:
+                self.status.set("Up to date!")
+                self._append_log(f"Already on latest version ({current_tag})", "success")
+                return
+
+            for asset in assets:
+                if asset.get("name") == "yt-transcript-gui.exe":
+                    url = asset.get("browser_download_url")
+                    if not url:
+                        continue
+
+                    self.status.set(f"Downloading {latest_tag}...")
+                    self._append_log(f"Downloading {latest_tag} from {url}", "info")
+
+                    batch_content = (
+                        "@echo off\n"
+                        "echo Waiting for app to close...\n"
+                        "powershell -Command \"Start-Sleep -Seconds 3\"\n"
+                        "echo Downloading update...\n"
+                        "powershell -Command \"Invoke-WebRequest -Uri '%s' -OutFile 'yt-transcript-gui.exe'\"\n"
+                        "echo Update downloaded. Restart the app.\n"
+                        "pause\n"
+                    ) % url
+                    batch_path.write_text(batch_content, encoding="utf-8")
+
+                    self.status.set("Launching updater...")
+                    self._append_log("Launching background updater, restart app after download", "info")
+                    subprocess.Popen(
+                        ["cmd", "/c", "start", "", str(batch_path)],
+                        cwd=exe_path.parent,
+                        shell=True,
+                    )
+                    self.root.quit()
+                    return
+
+            self.status.set("Update check failed")
+            self._append_log("Could not find yt-transcript-gui.exe asset", "error")
+
+        except Exception as exc:
+            self.status.set("Update check failed")
+            self._append_log(f"Update error: {exc}", "error")
 
 
 def main() -> None:
