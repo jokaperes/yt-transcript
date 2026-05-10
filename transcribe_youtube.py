@@ -109,6 +109,10 @@ def download_audio(
         "3",
         "--fragment-retries",
         "3",
+        "--progress-template",
+        "download:[download] %(progress._percent_str)s of %(progress._total_bytes_str)s at %(progress._speed_str)s ETA %(progress._eta_str)s",
+        "--progress-template",
+        "postprocess:[postprocess] %(progress.status)s %(info.id)s",
         "--no-playlist",
         "--extract-audio",
         "--audio-format",
@@ -147,6 +151,8 @@ def download_audio(
         raise SystemExit(f"Missing command: {command[0]}") from exc
 
     started_at = time.monotonic()
+    last_output_at = started_at
+    last_heartbeat_at = started_at
     line_queue: Queue[str] = Queue()
     assert process.stdout is not None
 
@@ -160,13 +166,18 @@ def download_audio(
         try:
             line = line_queue.get(timeout=0.2)
             clean = line.rstrip()
+            last_output_at = time.monotonic()
             output_lines.append(clean)
             if clean:
                 log(clean)
                 download_match = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", clean)
                 if download_match:
                     progress("download", float(download_match.group(1)), clean)
+                elif clean.startswith("[download]"):
+                    progress("download", None, clean)
                 elif clean.startswith("[ExtractAudio]"):
+                    progress("extract", None, clean)
+                elif clean.startswith("[postprocess]"):
                     progress("extract", None, clean)
                 elif clean.startswith("[youtube]"):
                     progress("download", None, clean)
@@ -181,12 +192,17 @@ def download_audio(
                     clean = line_queue.get_nowait().rstrip()
                 except Empty:
                     break
+                last_output_at = time.monotonic()
                 output_lines.append(clean)
                 log(clean)
                 download_match = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", clean)
                 if download_match:
                     progress("download", float(download_match.group(1)), clean)
+                elif clean.startswith("[download]"):
+                    progress("download", None, clean)
                 elif clean.startswith("[ExtractAudio]"):
+                    progress("extract", None, clean)
+                elif clean.startswith("[postprocess]"):
                     progress("extract", None, clean)
                 elif clean.startswith("[youtube]"):
                     progress("download", None, clean)
@@ -212,6 +228,14 @@ def download_audio(
                 f"yt-dlp took more than {timeout_seconds // 60} minutes. "
                 "This usually means YouTube is blocking the request, cookies are expired, or the network is stuck."
             )
+
+        now = time.monotonic()
+        if now - last_output_at > 10 and now - last_heartbeat_at > 10:
+            elapsed = int(now - started_at)
+            log(f"Still waiting for yt-dlp output... {elapsed}s elapsed")
+            estimated = min(12.0, elapsed / max(timeout_seconds, 1) * 100)
+            progress("download", estimated, f"Waiting for yt-dlp output ({elapsed}s)")
+            last_heartbeat_at = now
 
     if process.returncode != 0:
         details = "\n".join(output_lines[-80:])

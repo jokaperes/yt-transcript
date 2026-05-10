@@ -43,6 +43,8 @@ class App(ttk.Frame):
         self.status = tk.StringVar(value="Ready")
         self.elapsed = tk.StringVar(value="Elapsed: 00:00")
         self.detail = tk.StringVar(value="")
+        self.phase_percent_text = tk.StringVar(value="Current step: --")
+        self.total_percent_text = tk.StringVar(value="Overall: 0%")
         self.phase_progress = tk.DoubleVar(value=0)
         self.total_progress = tk.DoubleVar(value=0)
         self.started_at: float | None = None
@@ -108,11 +110,11 @@ class App(ttk.Frame):
 
         ttk.Label(self, textvariable=self.detail).grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 4))
 
-        ttk.Label(self, text="Current step").grid(row=7, column=0, sticky="w")
+        ttk.Label(self, textvariable=self.phase_percent_text).grid(row=7, column=0, sticky="w")
         self.phase_bar = ttk.Progressbar(self, mode="determinate", variable=self.phase_progress, maximum=100)
         self.phase_bar.grid(row=7, column=1, columnspan=2, sticky="ew", pady=(0, 4))
 
-        ttk.Label(self, text="Overall").grid(row=8, column=0, sticky="w")
+        ttk.Label(self, textvariable=self.total_percent_text).grid(row=8, column=0, sticky="w")
         self.total_bar = ttk.Progressbar(self, mode="determinate", variable=self.total_progress, maximum=100)
         self.total_bar.grid(row=8, column=1, columnspan=2, sticky="ew", pady=(0, 8))
 
@@ -177,6 +179,8 @@ class App(ttk.Frame):
         self.started_at = time.monotonic()
         self.phase_progress.set(0)
         self.total_progress.set(0)
+        self.phase_percent_text.set("Current step: --")
+        self.total_percent_text.set("Overall: 0%")
         self.detail.set("Preparing")
         self._set_busy(True)
         self.status.set("Running")
@@ -325,13 +329,19 @@ class App(ttk.Frame):
         self.status.set(labels.get(phase, phase.title()))
         if percent is None:
             self._set_phase_indeterminate(True)
+            start, _ = weights.get(phase, (0, 0))
+            self.total_progress.set(max(self.total_progress.get(), float(start)))
+            self.total_percent_text.set(f"Overall: {self.total_progress.get():.0f}%")
+            self.phase_percent_text.set("Current step: working")
             self.detail.set(detail)
             return
         self._set_phase_indeterminate(False)
         value = max(0.0, min(100.0, float(percent)))
         self.phase_progress.set(value)
+        self.phase_percent_text.set(f"Current step: {value:.1f}%")
         start, weight = weights.get(phase, (0, 0))
         self.total_progress.set(max(self.total_progress.get(), min(100.0, start + weight * (value / 100.0))))
+        self.total_percent_text.set(f"Overall: {self.total_progress.get():.0f}%")
         self.detail.set(f"{detail} ({value:.1f}%)")
 
     def _set_phase_indeterminate(self, enabled: bool) -> None:
