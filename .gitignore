@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Sensitive local authentication material
+cookies.txt
+*.cookies.txt
+
+# Downloaded media
+transcripts/*.mp3
+transcripts/*.webm
+transcripts/*.m4a
+transcripts/*.wav
+transcripts/*.info.json
+
+# Local/editor noise
+.DS_Store
+.idea/
+.vscode/
