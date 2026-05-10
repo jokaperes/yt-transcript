@@ -424,27 +424,29 @@ class App(ttk.Frame):
         exe_path = Path(sys.executable).resolve()
         batch_path = exe_path.with_name("update-inplace.bat")
 
-        UPDATE_URL = "https://github.com/jokaperes/yt-transcript/releases/download/v1.4.4/yt-transcript-windows.zip"
-        current_tag = "v1.4.4"
-
         try:
-            self.status.set(f"Downloading {current_tag}...")
-            self._append_log(f"Downloading {current_tag}...", "info")
+            self.status.set("Preparing update...")
+            self._append_log("Preparing update...", "info")
 
-            batch_lines = [
-                "@echo off",
-                'cd /d "%~dp0"',
-                "echo Waiting for app to close...",
-                'powershell -Command "Start-Sleep -Seconds 3"',
-                "echo Downloading update...",
-                'powershell -Command "Invoke-WebRequest -Uri \\"%s\\" -OutFile \\"yt-transcript-windows.zip\\""' % UPDATE_URL,
-                "echo Extracting...",
-                'powershell -Command "Expand-Archive -Path \\"yt-transcript-windows.zip\\" -DestinationPath \\".\\" -Force"',
-                "del yt-transcript-windows.zip",
-                "echo Done! Restart the app.",
-                "pause",
-            ]
-            batch_content = "\n".join(batch_lines) + "\n"
+            batch_content = (
+                "@echo off\n"
+                "cd /d \"%~dp0\"\n"
+                "echo Waiting for app to close...\n"
+                "powershell -Command \"Start-Sleep -Seconds 3\"\n"
+                "echo Downloading update using gh CLI...\n"
+                "gh release download latest -R jokaperes/yt-transcript -p yt-transcript-windows.zip\n"
+                "if errorlevel 1 (\n"
+                "  echo gh not found or not authenticated. Opening browser instead...\n"
+                "  start https://github.com/jokaperes/yt-transcript/releases/latest\n"
+                "  pause\n"
+                "  exit /b 1\n"
+                ")\n"
+                "echo Extracting...\n"
+                "powershell -Command \"Expand-Archive -Path 'yt-transcript-windows.zip' -DestinationPath '.' -Force\"\n"
+                "del yt-transcript-windows.zip\n"
+                "echo Done! Restart the app.\n"
+                "pause\n"
+            )
             batch_path.write_text(batch_content, encoding="utf-8")
 
             subprocess.Popen(
