@@ -55,6 +55,8 @@ yt-transcript-gui.exe
 
 The GUI is the easiest option: paste the YouTube URL, optionally select a `cookies.txt` file, keep `large-v3-turbo`, `cuda`, and `float16`, then click **Transcribe**.
 
+The GUI shows live `yt-dlp` download logs, Whisper progress timestamps, clear dependency errors, and has a cancel button.
+
 CLI usage is also available:
 
 ```cmd

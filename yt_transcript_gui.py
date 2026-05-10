@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import queue
 import threading
 import tkinter as tk
@@ -10,10 +11,10 @@ from typing import Any
 
 from transcribe_youtube import (
     DEFAULT_MODEL,
+    check_dependencies,
     download_audio,
     safe_name,
     transcribe_faster,
-    transcribe_openai,
     write_srt,
     write_txt,
     write_vtt,
@@ -30,6 +31,7 @@ class App(ttk.Frame):
 
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.worker: threading.Thread | None = None
+        self.cancel_requested = threading.Event()
 
         self.url = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(Path.cwd() / "transcripts"))
@@ -82,8 +84,14 @@ class App(ttk.Frame):
             values=("float16", "int8_float16", "int8"),
         ).grid(row=1, column=2, sticky="ew", padx=8)
 
-        self.start_button = ttk.Button(self, text="Transcribe", command=self._start)
-        self.start_button.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 8), ipady=6)
+        buttons = ttk.Frame(self)
+        buttons.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(12, 8))
+        buttons.columnconfigure(0, weight=1)
+        buttons.columnconfigure(1, weight=1)
+        self.start_button = ttk.Button(buttons, text="Transcribe", command=self._start)
+        self.start_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), ipady=6)
+        self.cancel_button = ttk.Button(buttons, text="Cancel", command=self._cancel, state="disabled")
+        self.cancel_button.grid(row=0, column=1, sticky="ew", padx=(4, 0), ipady=6)
 
         ttk.Label(self, textvariable=self.status).grid(row=5, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
@@ -120,6 +128,7 @@ class App(ttk.Frame):
 
     def _set_busy(self, busy: bool) -> None:
         self.start_button.configure(state="disabled" if busy else "normal")
+        self.cancel_button.configure(state="normal" if busy else "disabled")
         if busy:
             self.progress.start(10)
         else:
@@ -131,11 +140,29 @@ class App(ttk.Frame):
         if not self.url.get().strip():
             messagebox.showerror("Missing URL", "Paste a YouTube URL first.")
             return
+        issues = check_dependencies()
+        if issues:
+            messagebox.showerror("Missing dependency", "\n".join(issues))
+            return
+        cookies = self.cookies.get().strip()
+        if cookies and not Path(cookies).exists():
+            messagebox.showerror("Cookies not found", f"Cookies file does not exist:\n{cookies}")
+            return
+        if self.device.get().strip() == "cuda" and not shutil.which("nvidia-smi"):
+            self._append_log("nvidia-smi was not found. Continuing anyway, but CUDA may fail if the NVIDIA driver is not installed.")
+        if not shutil.which("node"):
+            self._append_log("Node.js was not found. Some YouTube videos may fail player challenge solving without it.")
+        self.cancel_requested.clear()
         self._set_busy(True)
         self.status.set("Running")
         self._append_log("Starting transcription")
         self.worker = threading.Thread(target=self._run_job, daemon=True)
         self.worker.start()
+
+    def _cancel(self) -> None:
+        self.cancel_requested.set()
+        self.status.set("Cancelling")
+        self._append_log("Cancel requested")
 
     def _run_job(self) -> None:
         try:
@@ -147,14 +174,42 @@ class App(ttk.Frame):
             compute_type = self.compute_type.get().strip() or "float16"
 
             self.events.put(("log", f"Downloading audio: {url}"))
-            audio_path, info = download_audio(url, output_dir, cookies, None)
+            audio_path, info = download_audio(
+                url,
+                output_dir,
+                cookies,
+                None,
+                log=lambda message: self.events.put(("log", message)),
+                stop_requested=self.cancel_requested.is_set,
+            )
             self.events.put(("log", f"Audio saved: {audio_path}"))
             self.events.put(("log", f"Loading model: {model} on {device} ({compute_type})"))
 
             if device == "cpu":
-                text, segments = transcribe_faster(audio_path, model, "transcribe", device, "int8", 5)
+                text, segments = transcribe_faster(
+                    audio_path,
+                    model,
+                    "transcribe",
+                    device,
+                    "int8",
+                    5,
+                    log=lambda message: self.events.put(("log", message)),
+                    stop_requested=self.cancel_requested.is_set,
+                )
             else:
-                text, segments = transcribe_faster(audio_path, model, "transcribe", device, compute_type, 5)
+                text, segments = transcribe_faster(
+                    audio_path,
+                    model,
+                    "transcribe",
+                    device,
+                    compute_type,
+                    5,
+                    log=lambda message: self.events.put(("log", message)),
+                    stop_requested=self.cancel_requested.is_set,
+                )
+            if self.cancel_requested.is_set():
+                self.events.put(("error", "Cancelled after transcription step."))
+                return
 
             title = safe_name(info.get("title") or audio_path.stem)
             stem = output_dir / title

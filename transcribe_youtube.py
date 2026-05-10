@@ -7,11 +7,15 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Any
+from queue import Empty, Queue
+from typing import Any, Callable
 
 
 DEFAULT_MODEL = "large-v3-turbo"
+DOWNLOAD_TIMEOUT_SECONDS = 900
 
 
 def run(command: list[str], capture_output: bool = False) -> str:
@@ -34,22 +38,50 @@ def safe_name(value: str) -> str:
     return value[:120] or "youtube-video"
 
 
-def download_audio(url: str, output_dir: Path, cookies: str | None, cookies_from_browser: str | None) -> tuple[Path, dict[str, Any]]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    template = str(output_dir / "%(title).120s [%(id)s].%(ext)s")
-
+def find_ytdlp() -> list[str]:
     bundled_ytdlp = Path(sys.executable).with_name("yt-dlp.exe")
     ytdlp_binary = str(bundled_ytdlp) if bundled_ytdlp.exists() else shutil.which("yt-dlp")
     if ytdlp_binary:
-        command = [ytdlp_binary]
-    else:
-        command = [sys.executable, "-m", "yt_dlp"]
+        return [ytdlp_binary]
+    return [sys.executable, "-m", "yt_dlp"]
+
+
+def check_dependencies() -> list[str]:
+    issues: list[str] = []
+    if not shutil.which("ffmpeg"):
+        issues.append("ffmpeg was not found on PATH. Install FFmpeg and reopen the app.")
+    command = find_ytdlp()
+    if len(command) == 1 and not Path(command[0]).exists():
+        issues.append("yt-dlp.exe was not found next to the app.")
+    return issues
+
+
+def download_audio(
+    url: str,
+    output_dir: Path,
+    cookies: str | None,
+    cookies_from_browser: str | None,
+    log: Callable[[str], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
+    timeout_seconds: int = DOWNLOAD_TIMEOUT_SECONDS,
+) -> tuple[Path, dict[str, Any]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    template = str(output_dir / "%(title).120s [%(id)s].%(ext)s")
+
+    command = find_ytdlp()
 
     command += [
         "--js-runtimes",
         "node",
         "--remote-components",
         "ejs:github",
+        "--newline",
+        "--socket-timeout",
+        "30",
+        "--retries",
+        "3",
+        "--fragment-retries",
+        "3",
         "--no-playlist",
         "--extract-audio",
         "--audio-format",
@@ -67,7 +99,84 @@ def download_audio(url: str, output_dir: Path, cookies: str | None, cookies_from
         command[3:3] = ["--cookies", cookies]
     if cookies_from_browser:
         command[3:3] = ["--cookies-from-browser", cookies_from_browser]
-    printed_paths = [line for line in run(command, capture_output=True).splitlines() if line.strip()]
+
+    printed_paths: list[str] = []
+    output_lines: list[str] = []
+    log = log or (lambda message: None)
+    stop_requested = stop_requested or (lambda: False)
+    log("Starting yt-dlp")
+    log(" ".join(command))
+
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except FileNotFoundError as exc:
+        raise SystemExit(f"Missing command: {command[0]}") from exc
+
+    started_at = time.monotonic()
+    line_queue: Queue[str] = Queue()
+    assert process.stdout is not None
+
+    def read_output() -> None:
+        for output_line in process.stdout:
+            line_queue.put(output_line)
+
+    threading.Thread(target=read_output, daemon=True).start()
+
+    while True:
+        try:
+            line = line_queue.get(timeout=0.2)
+            clean = line.rstrip()
+            output_lines.append(clean)
+            if clean:
+                log(clean)
+                if not clean.startswith("[") and not clean.startswith("WARNING:") and not clean.startswith("ERROR:"):
+                    printed_paths.append(clean)
+        except Empty:
+            pass
+
+        if process.poll() is not None:
+            while True:
+                try:
+                    clean = line_queue.get_nowait().rstrip()
+                except Empty:
+                    break
+                output_lines.append(clean)
+                log(clean)
+                if clean and not clean.startswith("[") and not clean.startswith("WARNING:") and not clean.startswith("ERROR:"):
+                    printed_paths.append(clean)
+            break
+
+        if stop_requested():
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise SystemExit("Download cancelled.")
+
+        if time.monotonic() - started_at > timeout_seconds:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise SystemExit(
+                f"yt-dlp took more than {timeout_seconds // 60} minutes. "
+                "This usually means YouTube is blocking the request, cookies are expired, or the network is stuck."
+            )
+
+    if process.returncode != 0:
+        details = "\n".join(output_lines[-80:])
+        raise SystemExit(f"yt-dlp failed with exit code {process.returncode}.\n\n{details}")
+
     if not printed_paths:
         raise SystemExit("yt-dlp finished, but did not report an audio file path.")
 
@@ -130,9 +239,13 @@ def transcribe_faster(
     device: str,
     compute_type: str,
     beam_size: int,
+    log: Callable[[str], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     from faster_whisper import WhisperModel
 
+    log = log or (lambda message: None)
+    stop_requested = stop_requested or (lambda: False)
     try:
         model = WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
@@ -143,6 +256,7 @@ def transcribe_faster(
                 "For a slower fallback, rerun with --device cpu --compute-type int8."
             ) from exc
         raise
+    log("Model loaded. Starting Whisper transcription.")
     segments_iter, _ = model.transcribe(
         str(audio_path),
         language="pt",
@@ -150,15 +264,20 @@ def transcribe_faster(
         beam_size=beam_size,
         vad_filter=True,
     )
-    segments = [
-        {
+    segments: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments_iter):
+        if stop_requested():
+            raise SystemExit("Transcription cancelled.")
+        segments.append(
+            {
             "id": index,
             "start": segment.start,
             "end": segment.end,
             "text": segment.text,
-        }
-        for index, segment in enumerate(segments_iter)
-    ]
+            }
+        )
+        if index == 0 or index % 10 == 0:
+            log(f"Transcribed up to {timestamp(segment.end, vtt=True)}")
     text = " ".join(segment["text"].strip() for segment in segments).strip()
     return text, segments
 
