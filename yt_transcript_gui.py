@@ -216,6 +216,7 @@ class App(ttk.Frame):
             self.events.put(("log", f"Audio saved: {audio_path}"))
             self.events.put(("progress", ("download", 100.0, "Audio saved")))
             self.events.put(("log", f"Loading model: {model} on {device} ({compute_type})"))
+            self.events.put(("progress", ("model", None, f"Preparing Whisper model {model} on {device}")))
 
             if device == "cpu":
                 text, segments = transcribe_faster(
@@ -273,7 +274,7 @@ class App(ttk.Frame):
             )
             self.events.put(("progress", ("write", 100.0, "Files written")))
             self.events.put(("done", [stem.with_suffix(".pt.txt"), stem.with_suffix(".pt.srt"), stem.with_suffix(".pt.vtt")]))
-        except Exception as exc:
+        except BaseException as exc:
             self.events.put(("error", str(exc)))
 
     def _drain_events(self) -> None:

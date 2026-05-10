@@ -114,6 +114,8 @@ def download_audio(
         "--progress-template",
         "postprocess:[postprocess] %(progress.status)s %(info.id)s",
         "--no-playlist",
+        "-f",
+        "bestaudio/best",
         "--extract-audio",
         "--audio-format",
         "mp3",
@@ -308,11 +310,14 @@ def transcribe_faster(
     progress: ProgressCallback | None = None,
     stop_requested: Callable[[], bool] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
-    from faster_whisper import WhisperModel
-
     log = log or (lambda message: None)
     progress = progress or (lambda phase, percent, detail: None)
     stop_requested = stop_requested or (lambda: False)
+    log("Importing faster-whisper")
+    progress("model", None, "Importing faster-whisper")
+    from faster_whisper import WhisperModel
+
+    log("Checking audio duration")
     duration = audio_duration_seconds(audio_path)
     progress("model", None, f"Loading {model_name}")
     try:
@@ -323,6 +328,7 @@ def transcribe_faster(
                 "Could not start faster-whisper on CUDA. Install/update the NVIDIA driver, CUDA 12 runtime, "
                 "and cuDNN 9 runtime, then make sure their bin folders are on PATH. "
                 "For a slower fallback, rerun with --device cpu --compute-type int8."
+                f"\n\nOriginal error: {exc}"
             ) from exc
         raise
     log("Model loaded. Starting Whisper transcription.")
