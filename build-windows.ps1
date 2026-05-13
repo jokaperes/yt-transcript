@@ -18,6 +18,11 @@ pyinstaller `
   --collect-all faster_whisper `
   --collect-all ctranslate2 `
   --hidden-import yt_dlp `
+  --hidden-import pystray `
+  --hidden-import pystray._win32 `
+  --hidden-import PIL `
+  --hidden-import PIL.Image `
+  --hidden-import PIL.ImageDraw `
   yt_transcript_gui.py
 
 New-Item -ItemType Directory -Force release | Out-Null

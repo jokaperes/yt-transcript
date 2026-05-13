@@ -1,4 +1,6 @@
 faster-whisper
 yt-dlp
+pystray
+Pillow
 pyinstaller
 torch --index-url https://download.pytorch.org/whl/cpu

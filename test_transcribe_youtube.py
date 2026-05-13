@@ -1,0 +1,235 @@
+import json
+import textwrap
+from pathlib import Path
+
+from transcribe_youtube import (
+    OUTPUT_FORMATS,
+    parse_urls,
+    safe_name,
+    timestamp,
+    write_json,
+    write_srt,
+    write_txt,
+    write_vtt,
+    normalize_cookies_file,
+)
+
+
+def test_safe_name_basic() -> None:
+    assert safe_name("Hello World") == "Hello World"
+    assert safe_name("") == "youtube-video"
+    assert safe_name("a" * 200) == "a" * 100
+
+
+def test_safe_name_strips_special_chars() -> None:
+    assert safe_name('Video: "Best" <Part> 1/2 | test?') == "Video Best Part 12 test"
+
+
+def test_safe_name_strips_unicode_symbols() -> None:
+    assert safe_name("Olá \u2605 mundo!") == "Olá mundo"
+
+
+def test_safe_name_strips_control_chars() -> None:
+    assert safe_name("hello\x00world") == "helloworld"
+
+
+def test_safe_name_trims_dots_spaces() -> None:
+    assert safe_name("  hello . world .  ") == "hello . world"
+
+
+def test_timestamp_zero() -> None:
+    assert timestamp(0.0) == "00:00:00,000"
+
+
+def test_timestamp_srt_format() -> None:
+    assert timestamp(3661.50, vtt=False) == "01:01:01,500"
+
+
+def test_timestamp_vtt_format() -> None:
+    assert timestamp(3661.50, vtt=True) == "01:01:01.500"
+
+
+def test_timestamp_rounding() -> None:
+    assert timestamp(0.9999) == "00:00:01,000"
+
+
+def test_write_srt(tmp_path: Path) -> None:
+    segments = [
+        {"start": 1.0, "end": 3.5, "text": "Hello world"},
+        {"start": 4.0, "end": 6.0, "text": "Second line"},
+    ]
+    out = tmp_path / "test.srt"
+    write_srt(out, segments)
+    content = out.read_text(encoding="utf-8")
+    assert "1\n00:00:01,000 --> 00:00:03,500\nHello world" in content
+    assert "2\n00:00:04,000 --> 00:00:06,000\nSecond line" in content
+
+
+def test_write_vtt(tmp_path: Path) -> None:
+    segments = [
+        {"start": 0.0, "end": 2.0, "text": "First"},
+        {"start": 2.5, "end": 5.0, "text": "Second"},
+    ]
+    out = tmp_path / "test.vtt"
+    write_vtt(out, segments)
+    content = out.read_text(encoding="utf-8")
+    assert content.startswith("WEBVTT")
+    assert "00:00:00.000 --> 00:00:02.000\nFirst" in content
+    assert "00:00:02.500 --> 00:00:05.000\nSecond" in content
+
+
+def test_write_txt_with_timestamps(tmp_path: Path) -> None:
+    segments = [
+        {"start": 1.0, "end": 3.0, "text": "Hello"},
+        {"start": 3.5, "end": 5.0, "text": "world"},
+    ]
+    out = tmp_path / "test.txt"
+    write_txt(out, segments)
+    content = out.read_text(encoding="utf-8")
+    assert "[00:00:01,000]" in content
+    assert "Hello" in content
+    assert "world" in content
+
+
+def test_write_txt_paragraph_breaks(tmp_path: Path) -> None:
+    segments = [
+        {"start": 1.0, "end": 3.0, "text": "First chunk"},
+        {"start": 3.5, "end": 5.0, "text": "continues"},
+        {"start": 12.0, "end": 15.0, "text": "New paragraph"},
+    ]
+    out = tmp_path / "test.txt"
+    write_txt(out, segments)
+    content = out.read_text(encoding="utf-8")
+    assert "\n\n" in content
+
+
+def test_write_txt_empty_segments(tmp_path: Path) -> None:
+    segments = [
+        {"start": 1.0, "end": 2.0, "text": "  "},
+        {"start": 2.5, "end": 4.0, "text": "Actual text"},
+    ]
+    out = tmp_path / "test.txt"
+    write_txt(out, segments)
+    content = out.read_text(encoding="utf-8")
+    assert "Actual text" in content
+
+
+def test_write_json(tmp_path: Path) -> None:
+    segments = [
+        {"id": 0, "start": 1.0, "end": 3.0, "text": "Hello"},
+    ]
+    info = {"title": "Test Video", "id": "abc123", "duration": 60.0}
+    out = tmp_path / "test.json"
+    write_json(out, segments, info)
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["segments"][0]["text"] == "Hello"
+    assert data["info"]["title"] == "Test Video"
+    assert data["info"]["id"] == "abc123"
+
+
+def test_write_json_strips_unknown_info(tmp_path: Path) -> None:
+    segments = [{"id": 0, "start": 0.0, "end": 1.0, "text": "X"}]
+    info = {"title": "T", "extra_field": "ignored"}
+    out = tmp_path / "test.json"
+    write_json(out, segments, info)
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert "extra_field" not in data["info"]
+    assert data["info"]["title"] == "T"
+
+
+def test_normalize_cookies_no_change(tmp_path: Path) -> None:
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("youtube.com\tFALSE\t/\tFALSE\t0\tVISITOR_INFO1_LIVE\txyz\n", encoding="utf-8")
+    result = normalize_cookies_file(str(cookies), tmp_path)
+    assert result == str(cookies)
+
+
+def test_normalize_cookies_fixes_dot_prefix(tmp_path: Path) -> None:
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text(
+        ".youtube.com\tFALSE\t/\tFALSE\t0\tVISITOR_INFO1_LIVE\txyz\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "output"
+    result = normalize_cookies_file(str(cookies), out_dir)
+    assert result != str(cookies)
+    fixed_content = Path(result).read_text(encoding="utf-8")
+    assert fixed_content.startswith("youtube.com\tFALSE")
+    assert not fixed_content.startswith(".youtube.com")
+
+
+def test_normalize_cookies_none() -> None:
+    assert normalize_cookies_file(None, Path("/tmp")) is None
+
+
+def test_output_formats_constant() -> None:
+    assert "txt" in OUTPUT_FORMATS
+    assert "srt" in OUTPUT_FORMATS
+    assert "vtt" in OUTPUT_FORMATS
+    assert "json" in OUTPUT_FORMATS
+
+
+class TestParseUrls:
+    def test_single_url(self) -> None:
+        urls = parse_urls("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        assert urls == ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]
+
+    def test_multiple_urls_one_per_line(self) -> None:
+        text = (
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa\n"
+            "https://www.youtube.com/watch?v=bbbbbbbbbbb\n"
+        )
+        urls = parse_urls(text)
+        assert len(urls) == 2
+
+    def test_deduplicates(self) -> None:
+        text = (
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa\n"
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa\n"
+        )
+        urls = parse_urls(text)
+        assert len(urls) == 1
+
+    def test_ignores_comments(self) -> None:
+        text = (
+            "# This is a comment\n"
+            "https://www.youtube.com/watch?v=aaaaaaaaaaa\n"
+        )
+        urls = parse_urls(text)
+        assert len(urls) == 1
+
+    def test_ignores_blank_lines(self) -> None:
+        text = "\n\nhttps://www.youtube.com/watch?v=aaaaaaaaaaa\n\n"
+        urls = parse_urls(text)
+        assert len(urls) == 1
+
+    def test_short_url(self) -> None:
+        urls = parse_urls("https://youtu.be/dQw4w9WgXcQ")
+        assert len(urls) == 1
+
+    def test_shorts_url(self) -> None:
+        urls = parse_urls("https://www.youtube.com/shorts/aaaaaaaaaaa")
+        assert len(urls) == 1
+
+    def test_embed_url(self) -> None:
+        urls = parse_urls("https://www.youtube.com/embed/dQw4w9WgXcQ")
+        assert len(urls) == 1
+
+    def test_live_url(self) -> None:
+        urls = parse_urls("https://www.youtube.com/live/aaaaaaaaaaa")
+        assert len(urls) == 1
+
+    def test_mixed_text_with_urls(self) -> None:
+        text = "Check this out https://www.youtube.com/watch?v=aaaaaaaaaaa and this https://youtu.be/bbbbbbbbbbb"
+        urls = parse_urls(text)
+        assert len(urls) == 2
+
+    def test_empty_input(self) -> None:
+        assert parse_urls("") == []
+        assert parse_urls("# just comments\n") == []
+
+    def test_plain_non_youtube_url(self) -> None:
+        text = "https://example.com/video.mp4"
+        urls = parse_urls(text)
+        assert len(urls) == 1
+        assert urls[0] == "https://example.com/video.mp4"

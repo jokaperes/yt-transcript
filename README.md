@@ -1,6 +1,6 @@
-# YouTube Portuguese Transcripts
+# YouTube Transcripts
 
-Small CLI that uses `yt-dlp` to download YouTube audio and Whisper to produce Portuguese transcripts.
+CLI and GUI that use `yt-dlp` to download YouTube audio and Whisper to produce transcripts in any language.
 
 The default backend is `faster-whisper`, which is the recommended path for NVIDIA GPUs.
 
@@ -31,19 +31,52 @@ source .venv/bin/activate
 python transcribe_youtube.py "https://www.youtube.com/watch?v=VIDEO_ID" --device cuda
 ```
 
+To specify a language (default is Portuguese):
+
+```bash
+python transcribe_youtube.py "URL" --language en --device cuda
+```
+
+To choose output formats:
+
+```bash
+python transcribe_youtube.py "URL" --format txt --format srt --format vtt --format json
+```
+
+### Batch processing
+
+Process multiple URLs from a file:
+
+```bash
+python transcribe_youtube.py --urls-file urls.txt --device cuda
+```
+
+The file should have one URL per line. Lines starting with `#` are ignored. Each URL is processed sequentially; failures don't stop the batch.
+
+```text
+# My batch list
+https://www.youtube.com/watch?v=VIDEO1
+https://www.youtube.com/watch?v=VIDEO2
+https://youtu.be/VIDEO3
+```
+
 If YouTube blocks the server with a bot/sign-in check, export YouTube cookies from your browser and pass them in:
 
 ```bash
 python transcribe_youtube.py "URL" --cookies /path/to/cookies.txt
 ```
 
-Outputs are written to `transcripts/`:
+### Output formats
 
-- `.pt.txt`: plain Portuguese transcript
-- `.pt.srt`: subtitles
-- `.pt.vtt`: web subtitles
-- `.pt.json`: transcript plus segments and source metadata
-- `.mp3`: downloaded audio
+All outputs use the pattern `.{lang}.{fmt}`:
+
+- `.pt.txt`: plain transcript with timestamps (default language: Portuguese)
+- `.pt.srt`: SRT subtitles
+- `.pt.vtt`: WebVTT subtitles
+- `.pt.json`: transcript segments plus source metadata
+- `.en.srt`: SRT subtitles in English (with `--language en`)
+
+Audio files (`.mp3`) are deleted after transcription by default.
 
 ## Windows Quick Start
 
@@ -53,9 +86,18 @@ Download the Windows release zip, extract it, and run:
 yt-transcript-gui.exe
 ```
 
-The GUI is the easiest option: paste the YouTube URL, optionally select a `cookies.txt` file, keep `large-v3-turbo`, `cuda`, and `float16`, then click **Transcribe**.
+The GUI supports:
 
-The GUI shows live `yt-dlp` download logs, Whisper progress timestamps, clear dependency errors, and has a cancel button.
+- **Batch URLs** — paste multiple URLs in the text box, one per line; they're processed sequentially with per-video error recovery
+- **Language selection** (Portuguese, English, Spanish, French, etc.)
+- **Output format checkboxes** (TXT, SRT, VTT, JSON)
+- **Paste button** — one-click clipboard paste into the URL box
+- **Estimated time remaining** (ETA) shown in the status bar during transcription
+- **Right-click log menu** — Copy selected, Select all, Clear log
+- **System tray icon** — minimize to tray while processing; tooltip shows progress
+- **In-app auto-update** — checks GitHub for the latest release and downloads/installs automatically
+- **Settings persistence** between sessions
+- **Live progress** — yt-dlp download logs, Whisper transcription progress, queue counter (3/5)
 
 CLI usage is also available:
 
@@ -87,7 +129,7 @@ python transcribe_youtube.py "URL" --backend faster-whisper --device cuda --comp
 
 Why:
 
-- `large-v3-turbo` is the best default for Portuguese transcription on 12 GB VRAM: strong quality and much faster than full `large-v3`.
+- `large-v3-turbo` is the best default for transcription on 12 GB VRAM: strong quality and much faster than full `large-v3`.
 - Use `large-v3` when you want maximum accuracy and can wait longer.
 - Use `medium` if CUDA memory setup fails or you want a smaller download.
 - Use `small` or `base` only for quick drafts.
@@ -100,5 +142,6 @@ python transcribe_youtube.py "URL" --device cuda --compute-type int8_float16 --m
 
 ## Notes
 
-- The CLI forces Whisper language detection to Portuguese with `language="pt"`.
-- `--task transcribe` keeps Portuguese output. `--task translate` translates to English, so avoid it if you want Portuguese text.
+- Use `--language` to set the transcription language (default: `pt`). Supported: `pt`, `en`, `es`, `fr`, `de`, `it`, `ja`, `ko`, `zh`, `ru`, or any Whisper-supported code.
+- `--task transcribe` keeps same-language output. `--task translate` translates to English.
+- Use `--format` to select output formats. Can be specified multiple times: `--format txt --format srt`. Default is `txt` only

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -14,32 +15,51 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable
 
+logger = logging.getLogger(__name__)
 
 LOG_FILE = Path("transcribe_youtube.log")
-
-
-def log_message(level: str, message: str) -> None:
-    import datetime
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] [{level}] {message}"
-    print(line, file=sys.stderr)
-    try:
-        LOG_FILE.write_text(LOG_FILE.read_text(encoding="utf-8", errors="replace") + line + "\n", encoding="utf-8")
-    except Exception:
-        pass
-
-
-def log_info(message: str) -> None:
-    log_message("INFO", message)
-
-
-def log_error(message: str) -> None:
-    log_message("ERROR", message)
-
 
 DEFAULT_MODEL = "large-v3-turbo"
 DOWNLOAD_TIMEOUT_SECONDS = 900
 ProgressCallback = Callable[[str, float | None, str], None]
+OUTPUT_FORMATS = ("txt", "srt", "vtt", "json")
+URL_PATTERN = re.compile(
+    r"https?://(?:www\.)?(?:youtube\.com/(?:watch\?.*v=|shorts/|embed/|live/)|youtu\.be/)[\w\-]{11}"
+)
+
+
+def parse_urls(text: str) -> list[str]:
+    lines = text.strip().splitlines()
+    urls: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        matches = URL_PATTERN.findall(line)
+        if matches:
+            for m in matches:
+                if m not in urls:
+                    urls.append(m)
+        elif line.startswith("http"):
+            if line not in urls:
+                urls.append(line)
+    return urls
+
+
+def setup_logging() -> None:
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    stream_handler = logging.StreamHandler(sys.stderr)
+    stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logging.basicConfig(handlers=[file_handler, stream_handler], level=logging.INFO)
+
+
+def log_info(message: str) -> None:
+    logger.info(message)
+
+
+def log_error(message: str) -> None:
+    logger.error(message)
 
 
 def run(command: list[str], capture_output: bool = False) -> str:
@@ -103,6 +123,21 @@ def normalize_cookies_file(cookies: str | None, output_dir: Path, log: Callable[
     return str(normalized)
 
 
+def _parse_ytdlp_line(line: str) -> tuple[float | None, str]:
+    download_match = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", line)
+    if download_match:
+        return float(download_match.group(1)), "download"
+    if line.startswith("[download]"):
+        return None, "download"
+    if line.startswith("[ExtractAudio]"):
+        return None, "extract"
+    if line.startswith("[postprocess]"):
+        return None, "extract"
+    if line.startswith("[youtube]"):
+        return None, "download"
+    return None, ""
+
+
 def download_audio(
     url: str,
     output_dir: Path,
@@ -120,43 +155,33 @@ def download_audio(
     stop_requested = stop_requested or (lambda: False)
     cookies = normalize_cookies_file(cookies, output_dir, log)
 
-    command = find_ytdlp()
-
-    command += [
-        "--js-runtimes",
-        "node",
-        "--remote-components",
-        "ejs:github",
+    ytdlp_cmd = find_ytdlp()
+    args: list[str] = [
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
         "--newline",
-        "--socket-timeout",
-        "30",
-        "--retries",
-        "3",
-        "--fragment-retries",
-        "3",
+        "--socket-timeout", "30",
+        "--retries", "3",
+        "--fragment-retries", "3",
         "--progress-template",
         "download:[download] %(progress._percent_str)s of %(progress._total_bytes_str)s at %(progress._speed_str)s ETA %(progress._eta_str)s",
         "--progress-template",
         "postprocess:[postprocess] %(progress.status)s %(info.id)s",
         "--no-playlist",
-        "-f",
-        "bestaudio/best",
+        "-f", "bestaudio/best",
         "--extract-audio",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "0",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",
         "--write-info-json",
-        "--print",
-        "after_move:filepath",
-        "-o",
-        template,
-        url,
+        "--print", "after_move:filepath",
+        "-o", template,
     ]
     if cookies:
-        command[3:3] = ["--cookies", cookies]
+        args = ["--cookies", cookies] + args
     if cookies_from_browser:
-        command[3:3] = ["--cookies-from-browser", cookies_from_browser]
+        args = ["--cookies-from-browser", cookies_from_browser] + args
+
+    command = ytdlp_cmd + args + [url]
 
     printed_paths: list[str] = []
     output_lines: list[str] = []
@@ -178,7 +203,7 @@ def download_audio(
         raise SystemExit(f"Missing command: {command[0]}") from exc
 
     started_at = time.monotonic()
-    last_output_at = started_at
+    last_output_at = [started_at]
     last_heartbeat_at = started_at
     line_queue: Queue[str] = Queue()
     assert process.stdout is not None
@@ -189,52 +214,31 @@ def download_audio(
 
     threading.Thread(target=read_output, daemon=True).start()
 
+    def _process_line(clean: str) -> None:
+        if not clean:
+            return
+        last_output_at[0] = time.monotonic()
+        output_lines.append(clean)
+        log(clean)
+        percent, phase = _parse_ytdlp_line(clean)
+        if phase:
+            progress(phase, percent, clean)
+        if not clean.startswith("[") and not clean.startswith("WARNING:") and not clean.startswith("ERROR:"):
+            printed_paths.append(clean)
+
     while True:
         try:
             line = line_queue.get(timeout=0.2)
-            clean = line.rstrip()
-            last_output_at = time.monotonic()
-            output_lines.append(clean)
-            if clean:
-                log(clean)
-                download_match = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", clean)
-                if download_match:
-                    progress("download", float(download_match.group(1)), clean)
-                elif clean.startswith("[download]"):
-                    progress("download", None, clean)
-                elif clean.startswith("[ExtractAudio]"):
-                    progress("extract", None, clean)
-                elif clean.startswith("[postprocess]"):
-                    progress("extract", None, clean)
-                elif clean.startswith("[youtube]"):
-                    progress("download", None, clean)
-                if not clean.startswith("[") and not clean.startswith("WARNING:") and not clean.startswith("ERROR:"):
-                    printed_paths.append(clean)
+            _process_line(line.rstrip())
         except Empty:
             pass
 
         if process.poll() is not None:
             while True:
                 try:
-                    clean = line_queue.get_nowait().rstrip()
+                    _process_line(line_queue.get_nowait().rstrip())
                 except Empty:
                     break
-                last_output_at = time.monotonic()
-                output_lines.append(clean)
-                log(clean)
-                download_match = re.search(r"\[download\]\s+(\d+(?:\.\d+)?)%", clean)
-                if download_match:
-                    progress("download", float(download_match.group(1)), clean)
-                elif clean.startswith("[download]"):
-                    progress("download", None, clean)
-                elif clean.startswith("[ExtractAudio]"):
-                    progress("extract", None, clean)
-                elif clean.startswith("[postprocess]"):
-                    progress("extract", None, clean)
-                elif clean.startswith("[youtube]"):
-                    progress("download", None, clean)
-                if clean and not clean.startswith("[") and not clean.startswith("WARNING:") and not clean.startswith("ERROR:"):
-                    printed_paths.append(clean)
             break
 
         if stop_requested():
@@ -257,7 +261,7 @@ def download_audio(
             )
 
         now = time.monotonic()
-        if now - last_output_at > 10 and now - last_heartbeat_at > 10:
+        if now - last_output_at[0] > 10 and now - last_heartbeat_at > 10:
             elapsed = int(now - started_at)
             log(f"Still waiting for yt-dlp output... {elapsed}s elapsed")
             estimated = min(12.0, elapsed / max(timeout_seconds, 1) * 100)
@@ -273,9 +277,9 @@ def download_audio(
 
     audio_path = Path(printed_paths[-1]).resolve()
     if not audio_path.exists():
-        candidates = sorted(output_dir.glob("*.mp3"), key=lambda path: path.stat().st_mtime, reverse=True)
+        candidates = sorted(output_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not candidates:
-            files = "\n".join(path.name for path in output_dir.glob("*"))
+            files = "\n".join(p.name for p in output_dir.glob("*"))
             raise SystemExit(
                 f"yt-dlp reported an audio path, but it does not exist: {audio_path}\n\n"
                 f"Files currently in output folder:\n{files}"
@@ -302,7 +306,25 @@ def timestamp(seconds: float, vtt: bool = False) -> str:
     return f"{hours:02}:{minutes:02}:{secs:02}{separator}{millis:03}"
 
 
-def write_txt(path: Path, text: str) -> None:
+def write_txt(path: Path, segments: list[dict[str, Any]]) -> None:
+    paragraphs: list[str] = []
+    current: list[str] = []
+    prev_end: float | None = None
+    for seg in segments:
+        start_ts = timestamp(seg["start"])
+        line = seg["text"].strip()
+        gap = (seg["start"] - prev_end) > 2.0 if prev_end is not None else False
+        if gap and current:
+            paragraphs.append(" ".join(current))
+            current = []
+        if line:
+            current.append(f"[{start_ts}] {line}")
+        prev_end = seg.get("end", seg["start"])
+    if current:
+        paragraphs.append(" ".join(current))
+    text = "\n\n".join(paragraphs)
+    if not text.strip():
+        text = " ".join(seg["text"].strip() for seg in segments).strip()
     path.write_text(text.strip() + "\n", encoding="utf-8")
 
 
@@ -325,11 +347,37 @@ def write_vtt(path: Path, segments: list[dict[str, Any]]) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def transcribe_openai(audio_path: Path, model_name: str, task: str, device: str | None) -> tuple[str, list[dict[str, Any]]]:
+def write_json(path: Path, segments: list[dict[str, Any]], info: dict[str, Any]) -> None:
+    data = {
+        "segments": segments,
+        "info": {k: info.get(k) for k in ("title", "id", "duration", "uploader", "upload_date") if k in info},
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def transcribe_openai(
+    audio_path: Path,
+    model_name: str,
+    task: str,
+    language: str,
+    device: str | None,
+    log: Callable[[str], None] | None = None,
+    progress: ProgressCallback | None = None,
+    stop_requested: Callable[[], bool] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    log = log or log_info
+    progress = progress or (lambda phase, percent, detail: None)
+    stop_requested = stop_requested or (lambda: False)
+
+    progress("model", None, "Loading openai-whisper model")
+
     import whisper
 
     model = whisper.load_model(model_name, device=device)
-    result = model.transcribe(str(audio_path), language="pt", task=task, fp16=device == "cuda")
+    progress("model", 50.0, "Model loaded, starting transcription")
+    if stop_requested():
+        raise SystemExit("Transcription cancelled.")
+    result = model.transcribe(str(audio_path), language=language, task=task, fp16=device == "cuda")
     return result["text"].strip(), result.get("segments", [])
 
 
@@ -337,6 +385,7 @@ def transcribe_faster(
     audio_path: Path,
     model_name: str,
     task: str,
+    language: str,
     device: str,
     compute_type: str,
     beam_size: int,
@@ -349,7 +398,6 @@ def transcribe_faster(
     stop_requested = stop_requested or (lambda: False)
 
     try:
-        import threading
         import tqdm._monitor
 
         class DisabledTqdmMonitor(threading.Thread):
@@ -365,6 +413,7 @@ def transcribe_faster(
 
     log("Importing faster-whisper")
     progress("model", None, "Importing faster-whisper")
+
     from faster_whisper import WhisperModel
 
     log("Checking audio duration")
@@ -381,15 +430,18 @@ def transcribe_faster(
                 f"\n\nOriginal error: {exc}"
             ) from exc
         raise
+
     log("Model loaded. Starting Whisper transcription.")
     progress("transcribe", 0.0, "Model loaded")
+
     segments_iter, _ = model.transcribe(
         str(audio_path),
-        language="pt",
+        language=language,
         task=task,
         beam_size=beam_size,
         vad_filter=True,
     )
+
     segments: list[dict[str, Any]] = []
     try:
         for index, segment in enumerate(segments_iter):
@@ -397,10 +449,10 @@ def transcribe_faster(
                 raise SystemExit("Transcription cancelled.")
             segments.append(
                 {
-                "id": index,
-                "start": segment.start,
-                "end": segment.end,
-                "text": segment.text,
+                    "id": index,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
                 }
             )
             if index == 0 or index % 10 == 0:
@@ -414,6 +466,7 @@ def transcribe_faster(
             tqdm.utils.monotonic = lambda: time.monotonic()
         except Exception:
             pass
+
     text = " ".join(segment["text"].strip() for segment in segments).strip()
     progress("transcribe", 100.0, "Transcription complete")
     return text, segments
@@ -427,12 +480,9 @@ def audio_duration_seconds(audio_path: Path) -> float | None:
         completed = subprocess.run(
             [
                 ffprobe,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
                 str(audio_path),
             ],
             check=True,
@@ -444,67 +494,147 @@ def audio_duration_seconds(audio_path: Path) -> float | None:
         return None
 
 
+def process_single_url(
+    url: str,
+    output_dir: Path,
+    cookies: str | None,
+    cookies_from_browser: str | None,
+    model: str,
+    task: str,
+    language: str,
+    backend: str,
+    device: str,
+    compute_type: str,
+    beam_size: int,
+    formats: list[str],
+) -> list[Path] | None:
+    audio_path, info = download_audio(url, output_dir, cookies, cookies_from_browser)
+
+    title = safe_name(info.get("title") or audio_path.stem)
+    stem = output_dir / title
+    lang = language
+
+    print(f"Loading {backend} model: {model} on {device}", file=sys.stderr)
+    print(f"Transcribing in {lang}: {audio_path}", file=sys.stderr)
+
+    try:
+        if backend == "faster-whisper":
+            text, segments = transcribe_faster(
+                audio_path,
+                model,
+                task,
+                lang,
+                device,
+                compute_type,
+                beam_size,
+            )
+        else:
+            dev = None if device == "auto" else device
+            text, segments = transcribe_openai(audio_path, model, task, lang, dev)
+
+        output_files: list[Path] = []
+        for fmt in formats:
+            out_path = stem.with_suffix(f".{lang}.{fmt}")
+            try:
+                if fmt == "txt":
+                    write_txt(out_path, segments)
+                elif fmt == "srt":
+                    write_srt(out_path, segments)
+                elif fmt == "vtt":
+                    write_vtt(out_path, segments)
+                elif fmt == "json":
+                    write_json(out_path, segments, info)
+                output_files.append(out_path)
+                log_info(f"Wrote {fmt}: {out_path}")
+            except Exception as exc:
+                log_error(f"Failed to write {fmt}: {exc}")
+                raise
+
+        return output_files
+    finally:
+        try:
+            audio_path.unlink(missing_ok=True)
+            log_info(f"Deleted audio: {audio_path}")
+        except Exception as exc:
+            log_error(f"Failed to delete audio {audio_path}: {exc}")
+
+        try:
+            info_path = audio_path.with_suffix(".info.json")
+            if info_path.exists():
+                info_path.unlink(missing_ok=True)
+                log_info(f"Deleted info: {info_path}")
+        except Exception as exc:
+            log_error(f"Failed to delete info {info_path}: {exc}")
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Download a YouTube video and transcribe it in Portuguese with Whisper.")
-    parser.add_argument("url", help="YouTube video URL")
+    parser = argparse.ArgumentParser(description="Download YouTube videos and transcribe them with Whisper.")
+    parser.add_argument("url", nargs="?", help="YouTube video URL (or use --urls-file for batch)")
+    parser.add_argument("--urls-file", help="Path to a text file with one YouTube URL per line")
     parser.add_argument("-o", "--output-dir", default="transcripts", help="Directory for audio and transcript files")
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL, help="Whisper model, for example small, medium, large-v3, large-v3-turbo")
-    parser.add_argument("--task", choices=["transcribe", "translate"], default="transcribe", help="Use transcribe for Portuguese text")
+    parser.add_argument("--task", choices=["transcribe", "translate"], default="transcribe", help="Use transcribe for same-language output, translate for English")
+    parser.add_argument("-l", "--language", default="pt", help="Language code for transcription (default: pt)")
     parser.add_argument("--backend", choices=["faster-whisper", "openai-whisper"], default="faster-whisper", help="Transcription backend")
     parser.add_argument("--device", default="cuda", help="Whisper device, for example cuda or cpu")
     parser.add_argument("--compute-type", default="float16", help="faster-whisper compute type: float16, int8_float16, int8")
     parser.add_argument("--beam-size", type=int, default=5, help="faster-whisper beam size")
+    parser.add_argument("--format", dest="formats", action="append", choices=OUTPUT_FORMATS, help="Output format(s): txt, srt, vtt, json. Can be repeated. Default: txt")
     parser.add_argument("--cookies", help="Path to exported browser cookies.txt for YouTube")
     parser.add_argument("--cookies-from-browser", help="Read cookies from a local browser, for example chrome or firefox")
     args = parser.parse_args()
 
+    formats = args.formats or ["txt"]
+    setup_logging()
+
+    urls: list[str] = []
+    if args.url:
+        urls.append(args.url)
+    if args.urls_file:
+        path = Path(args.urls_file).expanduser().resolve()
+        if not path.exists():
+            print(f"Error: URLs file not found: {path}", file=sys.stderr)
+            return 1
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                urls.append(line)
+
+    if not urls:
+        print("Error: Provide a URL argument or use --urls-file", file=sys.stderr)
+        parser.print_help(sys.stderr)
+        return 1
+
     output_dir = Path(args.output_dir).expanduser().resolve()
-    audio_path, info = download_audio(args.url, output_dir, args.cookies, args.cookies_from_browser)
 
-    title = safe_name(info.get("title") or audio_path.stem)
-    stem = output_dir / title
+    succeeded = 0
+    failed = 0
+    all_outputs: list[Path] = []
 
-    print(f"Loading {args.backend} model: {args.model} on {args.device}", file=sys.stderr)
-    print(f"Transcribing in Portuguese: {audio_path}", file=sys.stderr)
-    if args.backend == "faster-whisper":
-        text, segments = transcribe_faster(
-            audio_path,
-            args.model,
-            args.task,
-            args.device,
-            args.compute_type,
-            args.beam_size,
-        )
-    else:
-        device = None if args.device == "auto" else args.device
-        text, segments = transcribe_openai(audio_path, args.model, args.task, device)
+    for i, url in enumerate(urls, 1):
+        print(f"\n[{i}/{len(urls)}] Processing: {url}", file=sys.stderr)
+        try:
+            outputs = process_single_url(
+                url, output_dir, args.cookies, args.cookies_from_browser,
+                args.model, args.task, args.language, args.backend,
+                args.device, args.compute_type, args.beam_size, formats,
+            )
+            if outputs:
+                succeeded += 1
+                all_outputs.extend(outputs)
+                print(str(outputs[0]), file=sys.stderr)
+            else:
+                failed += 1
+                print(f"Error: no output for {url}", file=sys.stderr)
+        except SystemExit as exc:
+            failed += 1
+            print(f"Error processing [{i}/{len(urls)}] {url}: {exc}", file=sys.stderr)
+            continue
+        except KeyboardInterrupt:
+            print("\nInterrupted by user", file=sys.stderr)
+            break
 
-    text = " ".join(segment["text"].strip() for segment in segments).strip()
-    paragraphs = [p.strip() for p in re.split(r'\n\n+', text) if p.strip()]
-    formatted = "\n\n".join(f"## Segment {i+1}\n\n{p}" for i, p in enumerate(paragraphs))
-
-    try:
-        (stem.with_suffix(".pt.txt")).write_text(formatted, encoding="utf-8")
-        log_info(f"Wrote transcript: {stem.with_suffix('.pt.txt')}")
-    except Exception as exc:
-        log_error(f"Failed to write transcript: {exc}")
-        raise
-
-    try:
-        audio_path.unlink(missing_ok=True)
-        log_info(f"Deleted audio: {audio_path}")
-    except Exception as exc:
-        log_error(f"Failed to delete audio {audio_path}: {exc}")
-
-    try:
-        info_path = stem.with_suffix(".info.json")
-        if info_path.exists():
-            info_path.unlink(missing_ok=True)
-            log_info(f"Deleted info: {info_path}")
-    except Exception as exc:
-        log_error(f"Failed to delete info {info_path}: {exc}")
-
-    print(stem.with_suffix(".pt.txt"))
+    print(f"\nBatch complete: {succeeded} succeeded, {failed} failed out of {len(urls)}", file=sys.stderr)
     return 0
 
 
