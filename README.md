@@ -78,15 +78,19 @@ All outputs use the pattern `.{lang}.{fmt}`:
 
 Audio files (`.mp3`) are deleted after transcription by default.
 
-## Windows Quick Start
+## Windows App (recommended)
 
-Download the Windows release zip, extract it, and run:
+Download the latest **`YT Transcript-Setup-x.y.z.exe`** from the
+[Releases page](https://github.com/jokaperes/yt-transcript/releases) and run it.
+This is a desktop app (Electron front-end + bundled `faster-whisper` engine) — no
+Python install required. `ffmpeg` is still needed on `PATH` (see Setup above).
 
-```cmd
-yt-transcript-gui.exe
-```
+Once installed, the app **updates itself**: it checks GitHub Releases on launch and
+offers to download/install new versions, so you only install manually once.
 
-The GUI supports:
+> Building from source? See [Building the Windows installer](#building-the-windows-installer).
+
+The app supports:
 
 - **Batch URLs** — paste multiple URLs in the text box, one per line; they're processed sequentially with per-video error recovery
 - **Language selection** (Portuguese, English, Spanish, French, etc.)
@@ -99,25 +103,27 @@ The GUI supports:
 - **Settings persistence** between sessions
 - **Live progress** — yt-dlp download logs, Whisper transcription progress, queue counter (3/5)
 
-CLI usage is also available:
+If YouTube asks for bot/sign-in confirmation, export cookies from your browser and
+point the **Cookies file** field at the exported `cookies.txt`. Some browser cookie
+exporters write YouTube host-only cookies in a format Python rejects; the engine
+automatically writes a normalized copy inside the output folder when needed.
 
-```cmd
-yt-transcript.exe "https://www.youtube.com/watch?v=VIDEO_ID" --device cuda --model large-v3-turbo
-```
+For scripted/CLI use, run the Python engine directly from source (see Usage above).
 
-Or use the helper:
+## Building the Windows installer
 
-```cmd
-run-windows-gpu.bat
-```
+The installer is built by GitHub Actions on every `v*` tag (see
+`.github/workflows/windows-release.yml`):
 
-If YouTube asks for bot/sign-in confirmation, export cookies from your browser and run:
+1. `build-engine.ps1` builds `transcribe_youtube.py` into a standalone
+   `yt-transcript.exe` with PyInstaller and downloads `yt-dlp.exe`, staging both into
+   `electron/engine/`.
+2. `npm install` then `npm run publish` (electron-builder) bundles that engine inside
+   the Electron app, produces `YT Transcript-Setup-x.y.z.exe` plus the `latest.yml`
+   auto-update feed, and publishes them to GitHub Releases.
 
-```cmd
-yt-transcript.exe "URL" --cookies C:\path\to\cookies.txt --device cuda --model large-v3-turbo
-```
-
-Some browser cookie exporters write YouTube host-only cookies in a format Python rejects. The app automatically writes a normalized copy inside the output folder when needed.
+To cut a release: bump `version` in `electron/package.json`, then push a matching tag,
+e.g. `git tag v2.0.0 && git push origin v2.0.0`.
 
 ## Model Choice
 

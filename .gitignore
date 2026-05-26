@@ -15,6 +15,19 @@ transcripts/*.m4a
 transcripts/*.wav
 transcripts/*.info.json
 
+# Electron build artifacts
+electron/node_modules/
+electron/dist/
+electron/engine/yt-transcript
+electron/engine/yt-transcript.exe
+electron/engine/yt-dlp
+electron/engine/yt-dlp.exe
+
+# PyInstaller artifacts (root-anchored so electron/build icons are kept)
+/build/
+/dist/
+*.spec
+
 # Local/editor noise
 .DS_Store
 .idea/

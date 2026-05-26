@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline';"
+    />
+    <title>YT Transcript</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <fieldset class="urls">
+        <legend>YouTube URLs (one per line)</legend>
+        <textarea id="urls" rows="4" spellcheck="false"
+          placeholder="https://www.youtube.com/watch?v=..."></textarea>
+        <div class="row">
+          <button id="paste" class="small">Paste</button>
+          <button id="clear-urls" class="small">Clear</button>
+          <span class="hint">Lines starting with # are ignored.</span>
+        </div>
+      </fieldset>
+
+      <div class="field">
+        <label for="output-dir">Output folder</label>
+        <input id="output-dir" type="text" />
+        <button id="browse-output" class="small">Browse</button>
+      </div>
+
+      <div class="field">
+        <label for="cookies">Cookies file</label>
+        <input id="cookies" type="text" placeholder="(optional) cookies.txt" />
+        <button id="browse-cookies" class="small">Browse</button>
+        <button id="clear-cookies" class="small">Clear</button>
+      </div>
+
+      <div class="options">
+        <div>
+          <label for="model">Model</label>
+          <select id="model">
+            <option>large-v3-turbo</option>
+            <option>large-v3</option>
+            <option>medium</option>
+            <option>small</option>
+            <option>base</option>
+          </select>
+        </div>
+        <div>
+          <label for="device">Device</label>
+          <select id="device">
+            <option>cuda</option>
+            <option>cpu</option>
+          </select>
+        </div>
+        <div>
+          <label for="compute">Compute</label>
+          <select id="compute">
+            <option>float16</option>
+            <option>int8_float16</option>
+            <option>int8</option>
+          </select>
+        </div>
+        <div>
+          <label for="language">Language</label>
+          <select id="language">
+            <option>pt</option><option>en</option><option>es</option>
+            <option>fr</option><option>de</option><option>it</option>
+            <option>ja</option><option>ko</option><option>zh</option>
+            <option>ru</option>
+          </select>
+        </div>
+        <div>
+          <label for="task">Task</label>
+          <select id="task">
+            <option value="transcribe">transcribe</option>
+            <option value="translate">translate → EN</option>
+          </select>
+        </div>
+      </div>
+
+      <fieldset class="formats">
+        <legend>Output formats</legend>
+        <label><input type="checkbox" id="fmt-txt" checked /> TXT</label>
+        <label><input type="checkbox" id="fmt-srt" /> SRT</label>
+        <label><input type="checkbox" id="fmt-vtt" /> VTT</label>
+        <label><input type="checkbox" id="fmt-json" /> JSON</label>
+      </fieldset>
+
+      <div class="actions-main">
+        <button id="start" class="primary">Transcribe</button>
+        <button id="cancel" class="danger" disabled>Cancel</button>
+      </div>
+
+      <div class="statusbar">
+        <span id="status">Ready</span>
+        <span id="queue"></span>
+        <span id="eta"></span>
+        <span id="elapsed">Elapsed: 0s</span>
+      </div>
+
+      <div id="detail" class="detail"></div>
+
+      <div class="progress-row">
+        <span id="phase-text">Current step: --</span>
+        <progress id="phase-bar" max="100" value="0"></progress>
+      </div>
+      <div class="progress-row">
+        <span id="total-text">Overall: 0%</span>
+        <progress id="total-bar" max="100" value="0"></progress>
+      </div>
+
+      <div id="log" class="log"></div>
+
+      <div class="actions-bottom">
+        <button id="open-output" class="small">Open output folder</button>
+        <span class="spacer"></span>
+        <span id="update-state" class="update-state"></span>
+        <button id="check-update" class="small">Check for updates</button>
+      </div>
+    </main>
+
+    <div id="log-menu" class="context-menu">
+      <div data-action="copy">Copy selected</div>
+      <div data-action="selectall">Select all</div>
+      <hr />
+      <div data-action="clear">Clear log</div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

@@ -20,12 +20,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build Windows executable
-        shell: pwsh
-        run: ./build-windows.ps1
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/setup-node@v4
         with:
-          files: yt-transcript-windows.zip
-          generate_release_notes: true
+          node-version: "20"
+
+      - name: Build Python engine (PyInstaller) + stage yt-dlp
+        shell: pwsh
+        run: ./build-engine.ps1
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm install
+
+      - name: Build installer and publish to GitHub Releases
+        working-directory: electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run publish

@@ -567,6 +567,141 @@ def process_single_url(
             log_error(f"Failed to delete info {info_path}: {exc}")
 
 
+def emit_event(payload: dict[str, Any]) -> None:
+    """Write a single newline-delimited JSON event to stdout and flush.
+
+    Used by --json-events mode so an Electron (or other) front-end can parse
+    structured progress instead of scraping human-readable log lines.
+    """
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def run_json_events_batch(args: argparse.Namespace, urls: list[str], formats: list[str]) -> int:
+    """Process URLs sequentially, emitting JSON events on stdout.
+
+    Cancellation: a background thread reads stdin; the line "cancel" sets a
+    threading.Event that is polled by the download/transcribe loops. The
+    front-end may also simply terminate the process.
+    """
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    cancel = threading.Event()
+
+    def watch_stdin() -> None:
+        try:
+            for line in sys.stdin:
+                if line.strip().lower() == "cancel":
+                    cancel.set()
+                    break
+        except Exception:
+            pass
+
+    threading.Thread(target=watch_stdin, daemon=True).start()
+
+    def log_cb(message: str) -> None:
+        emit_event({"type": "log", "message": message})
+
+    def progress_cb(phase: str, percent: float | None, detail: str) -> None:
+        emit_event({"type": "progress", "phase": phase, "percent": percent, "detail": detail})
+
+    effective_compute = "int8" if args.device == "cpu" else args.compute_type
+    total = len(urls)
+    completed = 0
+    failed = 0
+    all_files: list[str] = []
+
+    emit_event({"type": "batch_start", "total": total})
+
+    for i, url in enumerate(urls, 1):
+        if cancel.is_set():
+            log_cb(f"Cancelled. Processed {i - 1}/{total} URL(s).")
+            break
+
+        emit_event({"type": "queue", "current": i, "total": total, "url": url})
+        emit_event({"type": "progress", "phase": "download", "percent": None, "detail": f"Downloading [{i}/{total}]"})
+
+        try:
+            audio_path, info = download_audio(
+                url,
+                output_dir,
+                args.cookies,
+                args.cookies_from_browser,
+                log=log_cb,
+                progress=progress_cb,
+                stop_requested=cancel.is_set,
+            )
+            log_cb(f"Audio saved: {audio_path}")
+            if cancel.is_set():
+                log_cb(f"Cancelled during download of URL {i}.")
+                break
+
+            emit_event({"type": "progress", "phase": "model", "percent": None, "detail": f"Loading model [{i}/{total}]"})
+            text, segments = transcribe_faster(
+                audio_path,
+                args.model,
+                args.task,
+                args.language,
+                args.device,
+                effective_compute,
+                args.beam_size,
+                log=log_cb,
+                progress=progress_cb,
+                stop_requested=cancel.is_set,
+            )
+            if cancel.is_set():
+                log_cb(f"Cancelled after transcription of URL {i}.")
+                break
+
+            title = safe_name(info.get("title") or audio_path.stem)
+            stem = output_dir / title
+            emit_event({"type": "progress", "phase": "write", "percent": 0.0, "detail": f"Writing files [{i}/{total}]"})
+
+            video_files: list[str] = []
+            for fmt in formats:
+                out_path = stem.with_suffix(f".{args.language}.{fmt}")
+                if fmt == "txt":
+                    write_txt(out_path, segments)
+                elif fmt == "srt":
+                    write_srt(out_path, segments)
+                elif fmt == "vtt":
+                    write_vtt(out_path, segments)
+                elif fmt == "json":
+                    write_json(out_path, segments, info)
+                video_files.append(str(out_path))
+                all_files.append(str(out_path))
+                log_cb(f"Wrote {fmt}: {out_path}")
+
+            try:
+                audio_path.unlink(missing_ok=True)
+                info_path = audio_path.with_suffix(".info.json")
+                if info_path.exists():
+                    info_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            completed += 1
+            emit_event({"type": "video_done", "title": title, "files": video_files})
+
+        except BaseException as exc:
+            message = str(exc)
+            if "cancel" in message.lower():
+                log_cb("Cancelled by user.")
+                break
+            failed += 1
+            emit_event({"type": "video_failed", "url": url, "error": message})
+            continue
+
+    emit_event({
+        "type": "batch_done",
+        "completed": completed,
+        "failed": failed,
+        "total": total,
+        "files": all_files,
+        "cancelled": cancel.is_set(),
+    })
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Download YouTube videos and transcribe them with Whisper.")
     parser.add_argument("url", nargs="?", help="YouTube video URL (or use --urls-file for batch)")
@@ -582,6 +717,7 @@ def main() -> int:
     parser.add_argument("--format", dest="formats", action="append", choices=OUTPUT_FORMATS, help="Output format(s): txt, srt, vtt, json. Can be repeated. Default: txt")
     parser.add_argument("--cookies", help="Path to exported browser cookies.txt for YouTube")
     parser.add_argument("--cookies-from-browser", help="Read cookies from a local browser, for example chrome or firefox")
+    parser.add_argument("--json-events", action="store_true", help="Emit newline-delimited JSON events on stdout (for the Electron front-end)")
     args = parser.parse_args()
 
     formats = args.formats or ["txt"]
@@ -604,6 +740,9 @@ def main() -> int:
         print("Error: Provide a URL argument or use --urls-file", file=sys.stderr)
         parser.print_help(sys.stderr)
         return 1
+
+    if args.json_events:
+        return run_json_events_batch(args, urls, formats)
 
     output_dir = Path(args.output_dir).expanduser().resolve()
 
