@@ -1,0 +1,56 @@
+name: Diagnose Engine Size
+
+# Manual-only: builds the Python engine and prints a size breakdown so we can
+# see what is actually bloating the installer. Does not publish anything.
+on:
+  workflow_dispatch:
+
+jobs:
+  measure:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install engine deps
+        run: |
+          python -m pip install -U pip
+          python -m pip install -r requirements-windows.txt
+
+      - name: Build engine as ONEDIR (so contents are inspectable)
+        run: |
+          pyinstaller `
+            --onedir `
+            --name yt-transcript `
+            --collect-all faster_whisper `
+            --collect-all ctranslate2 `
+            --hidden-import yt_dlp `
+            transcribe_youtube.py
+
+      - name: Report total size
+        shell: pwsh
+        run: |
+          $root = "dist/yt-transcript"
+          $total = (Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum
+          "TOTAL onedir: {0:N1} MB" -f ($total/1MB)
+
+      - name: Top 40 largest files
+        shell: pwsh
+        run: |
+          Get-ChildItem "dist/yt-transcript" -Recurse -File |
+            Sort-Object Length -Descending | Select-Object -First 40 |
+            ForEach-Object { "{0,9:N1} MB  {1}" -f ($_.Length/1MB), ($_.FullName.Replace((Resolve-Path 'dist/yt-transcript').Path + '\','')) }
+
+      - name: Size grouped by top-level folder under _internal
+        shell: pwsh
+        run: |
+          $base = "dist/yt-transcript/_internal"
+          if (Test-Path $base) {
+            Get-ChildItem $base | ForEach-Object {
+              $sz = if ($_.PSIsContainer) { (Get-ChildItem $_.FullName -Recurse -File | Measure-Object Length -Sum).Sum } else { $_.Length }
+              [pscustomobject]@{ MB = [math]::Round($sz/1MB,1); Name = $_.Name }
+            } | Sort-Object MB -Descending | Select-Object -First 30 | Format-Table -AutoSize | Out-String -Width 200
+          }
