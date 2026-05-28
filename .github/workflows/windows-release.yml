@@ -37,7 +37,7 @@ jobs:
             --icon electron/build/icon.ico `
             --collect-all faster_whisper `
             --collect-all ctranslate2 `
-            --hidden-import yt_dlp `
+            --collect-all yt_dlp `
             --hidden-import pystray `
             --hidden-import pystray._win32 `
             --hidden-import PIL `
@@ -51,23 +51,28 @@ jobs:
             --exclude-module pandas `
             yt_transcript_gui.py
 
-      - name: Strip unused ffmpeg video/image encoders (audio decode only)
+      - name: Strip unused native libs (audio-decode-only, tray-icon-only PIL)
         shell: pwsh
         run: |
+          # ffmpeg video/image encoders + video-device libs we never touch.
           $avlibs = "dist/yt-transcript/_internal/av.libs"
           if (Test-Path $avlibs) {
-            $patterns = @("libx265*","libSvtAv1Enc*","libx264*","libvpx*","libdav1d*","libopenh264*","libwebp*","libvorbisenc*","libaom*")
+            $patterns = @("libx265*","libSvtAv1Enc*","libx264*","libvpx*","libdav1d*","libopenh264*","libwebp*","libvorbisenc*","libaom*","libvpl*","avdevice*")
             foreach ($p in $patterns) {
               Get-ChildItem $avlibs -Filter $p -ErrorAction SilentlyContinue | Remove-Item -Force
             }
           }
+          # Pillow is only used to draw the tray icon — drop unused image codecs.
+          $pil = "dist/yt-transcript/_internal/PIL"
+          if (Test-Path $pil) {
+            foreach ($p in @("_avif*","_webp*","_imagingcms*","_imagingft*")) {
+              Get-ChildItem $pil -Filter $p -ErrorAction SilentlyContinue | Remove-Item -Force
+            }
+          }
 
-      - name: Stage yt-dlp.exe and README alongside the app
+      - name: Stage README alongside the app
         shell: pwsh
         run: |
-          Invoke-WebRequest `
-            -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
-            -OutFile "dist/yt-transcript/yt-dlp.exe"
           Copy-Item README.md "dist/yt-transcript/README.md"
 
       - name: Package release zip

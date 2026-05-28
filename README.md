@@ -119,12 +119,14 @@ The app is built by GitHub Actions on every `v*` tag (see
 
 1. PyInstaller bundles `yt_transcript_gui.py` (GUI + in-process `faster-whisper`
    engine) into a single `dist/yt-transcript/` folder.
-2. Size optimizations: unused ffmpeg video/image encoders are stripped and large
-   optional modules (`hf_xet`, `torch`, `whisper`, …) are excluded — the local-ML
-   native libraries (CTranslate2, onnxruntime VAD, OpenBLAS, ffmpeg audio decode)
-   are the size floor.
-3. `yt-dlp.exe` is staged alongside, and everything is packaged into
-   `yt-transcript-windows.zip` (~110 MB) and published to GitHub Releases.
+2. Size optimizations: unused ffmpeg video/image encoders and Pillow image
+   codecs are stripped, large optional modules (`hf_xet`, `torch`, `whisper`, …)
+   are excluded, and `yt-dlp` ships as the bundled Python module (the app
+   re-invokes its own exe to run it) instead of a separate ~18 MB `yt-dlp.exe` —
+   the local-ML native libraries (CTranslate2, onnxruntime VAD, OpenBLAS, ffmpeg
+   audio decode) are the size floor.
+3. Everything is packaged into `yt-transcript-windows.zip` (~95 MB) and published
+   to GitHub Releases.
 
 To cut a release: bump `__version__` in `yt_transcript_gui.py`, then push a matching
 tag, e.g. `git tag v2.1.0 && git push origin v2.1.0`.

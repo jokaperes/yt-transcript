@@ -12,7 +12,7 @@ pyinstaller `
   --icon electron/build/icon.ico `
   --collect-all faster_whisper `
   --collect-all ctranslate2 `
-  --hidden-import yt_dlp `
+  --collect-all yt_dlp `
   --hidden-import pystray `
   --hidden-import pystray._win32 `
   --hidden-import PIL `
@@ -26,18 +26,24 @@ pyinstaller `
   --exclude-module pandas `
   yt_transcript_gui.py
 
-# Strip unused ffmpeg video/image encoders (we only decode audio).
+# Strip unused ffmpeg video/image encoders + video-device libs (audio decode only).
 $avlibs = "dist/yt-transcript/_internal/av.libs"
 if (Test-Path $avlibs) {
-  foreach ($p in @("libx265*","libSvtAv1Enc*","libx264*","libvpx*","libdav1d*","libopenh264*","libwebp*","libvorbisenc*","libaom*")) {
+  foreach ($p in @("libx265*","libSvtAv1Enc*","libx264*","libvpx*","libdav1d*","libopenh264*","libwebp*","libvorbisenc*","libaom*","libvpl*","avdevice*")) {
     Get-ChildItem $avlibs -Filter $p -ErrorAction SilentlyContinue | Remove-Item -Force
   }
 }
 
-# yt-dlp.exe must sit next to the app exe (find_ytdlp looks beside sys.executable).
-Invoke-WebRequest `
-  -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
-  -OutFile "dist/yt-transcript/yt-dlp.exe"
+# Pillow is only used to draw the tray icon — drop unused image codecs.
+$pil = "dist/yt-transcript/_internal/PIL"
+if (Test-Path $pil) {
+  foreach ($p in @("_avif*","_webp*","_imagingcms*","_imagingft*")) {
+    Get-ChildItem $pil -Filter $p -ErrorAction SilentlyContinue | Remove-Item -Force
+  }
+}
+
+# yt-dlp now runs from the bundled yt_dlp module via the app's --run-ytdlp
+# dispatch, so we no longer ship a separate yt-dlp.exe.
 Copy-Item README.md "dist/yt-transcript/README.md"
 Copy-Item run-windows-gpu.bat "dist/yt-transcript/run-windows-gpu.bat"
 

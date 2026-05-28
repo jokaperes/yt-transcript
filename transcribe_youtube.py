@@ -85,6 +85,11 @@ def safe_name(value: str) -> str:
 
 
 def find_ytdlp() -> list[str]:
+    # Frozen build: the yt_dlp module is bundled, so re-invoke our own exe as a
+    # yt-dlp runner (see the "--run-ytdlp" dispatch in yt_transcript_gui.py).
+    # This avoids shipping a separate ~18 MB standalone yt-dlp.exe.
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-ytdlp"]
     bundled_ytdlp = Path(sys.executable).with_name("yt-dlp.exe")
     ytdlp_binary = str(bundled_ytdlp) if bundled_ytdlp.exists() else shutil.which("yt-dlp")
     if ytdlp_binary:
@@ -97,8 +102,9 @@ def check_dependencies() -> list[str]:
     if not shutil.which("ffmpeg"):
         issues.append("ffmpeg was not found on PATH. Install FFmpeg and reopen the app.")
     command = find_ytdlp()
+    # A single-element command is a discovered binary path; verify it exists.
     if len(command) == 1 and not Path(command[0]).exists():
-        issues.append("yt-dlp.exe was not found next to the app.")
+        issues.append("yt-dlp was not found.")
     return issues
 
 

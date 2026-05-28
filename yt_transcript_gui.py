@@ -46,7 +46,7 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 REPO_OWNER = "jokaperes"
 REPO_NAME = "yt-transcript"
@@ -92,7 +92,12 @@ def make_tray_icon(width: int = 64, height: int = 64, color: str = "#2563eb") ->
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     dc = ImageDraw.Draw(img)
     dc.rectangle([4, 4, width - 4, height - 4], fill=color, outline="white", width=2)
-    dc.text((width // 4, height // 4), "YT", fill="white")
+    try:
+        # Default bitmap font (no FreeType / _imagingft dependency); skip if
+        # the stripped build lacks font support rather than crashing the tray.
+        dc.text((width // 4, height // 4), "YT", fill="white")
+    except Exception:
+        pass
     return img
 
 
@@ -887,4 +892,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # The bundled build re-invokes this same exe as the yt-dlp runner (the
+    # yt_dlp module is bundled, so we don't ship a separate ~18 MB yt-dlp.exe).
+    if len(sys.argv) >= 2 and sys.argv[1] == "--run-ytdlp":
+        # In a --windowed frozen build sys.stdout/stderr are None; reattach them
+        # to the inherited OS pipe handles so the parent can read yt-dlp output.
+        _pipe = open(1, "w", encoding="utf-8", errors="replace", buffering=1, closefd=False)
+        sys.stdout = _pipe
+        sys.stderr = _pipe
+        import yt_dlp
+        sys.argv = ["yt-dlp", *sys.argv[2:]]
+        sys.exit(yt_dlp.main())
     main()
