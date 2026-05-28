@@ -1,6 +1,6 @@
 {
   "name": "yt-transcript",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "YouTube transcription desktop app (Electron front-end + faster-whisper engine)",
   "author": "jokaperes",
   "license": "MIT",
