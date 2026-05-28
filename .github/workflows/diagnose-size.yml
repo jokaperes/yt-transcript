@@ -1,7 +1,8 @@
 name: Diagnose Engine Size
 
-# Manual-only: builds the Python engine and prints a size breakdown so we can
-# see what is actually bloating the installer. Does not publish anything.
+# Manual-only: builds the proposed Tkinter-only artifact (GUI + engine in one
+# PyInstaller bundle) with size optimizations applied, and reports both the
+# unpacked size and the final release-zip size. Publishes nothing.
 on:
   workflow_dispatch:
 
@@ -15,42 +16,61 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install engine deps
+      - name: Install deps (GUI + engine, no pyinstaller-only extras)
         run: |
           python -m pip install -U pip
-          python -m pip install -r requirements-windows.txt
+          python -m pip install faster-whisper yt-dlp pystray Pillow pyinstaller
 
-      - name: Build engine as ONEDIR (so contents are inspectable)
+      - name: Build Tkinter GUI + engine (onedir, optimized excludes)
         run: |
           pyinstaller `
-            --onedir `
+            --onedir --noconsole `
             --name yt-transcript `
             --collect-all faster_whisper `
             --collect-all ctranslate2 `
             --hidden-import yt_dlp `
-            transcribe_youtube.py
+            --exclude-module hf_xet `
+            --exclude-module torch `
+            --exclude-module whisper `
+            --exclude-module matplotlib `
+            --exclude-module scipy `
+            --exclude-module pandas `
+            yt_transcript_gui.py
 
-      - name: Report total size
+      - name: Strip unused ffmpeg video/image ENCODER libs (audio-decode only)
+        shell: pwsh
+        run: |
+          $avlibs = "dist/yt-transcript/_internal/av.libs"
+          if (Test-Path $avlibs) {
+            $patterns = @("libx265*","libSvtAv1Enc*","libx264*","libvpx*","libdav1d*","libopenh264*","libwebp*","libvorbisenc*","libaom*")
+            foreach ($p in $patterns) {
+              Get-ChildItem $avlibs -Filter $p -ErrorAction SilentlyContinue | ForEach-Object {
+                "removing {0,7:N1} MB  {1}" -f ($_.Length/1MB), $_.Name
+                Remove-Item $_.FullName -Force
+              }
+            }
+          }
+
+      - name: Stage yt-dlp.exe alongside (needed at runtime)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" `
+            -OutFile "dist/yt-transcript/yt-dlp.exe"
+
+      - name: Report unpacked size + biggest remaining files
         shell: pwsh
         run: |
           $root = "dist/yt-transcript"
           $total = (Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum
-          "TOTAL onedir: {0:N1} MB" -f ($total/1MB)
+          "UNPACKED total: {0:N1} MB" -f ($total/1MB)
+          Get-ChildItem $root -Recurse -File | Sort-Object Length -Descending | Select-Object -First 20 |
+            ForEach-Object { "{0,9:N1} MB  {1}" -f ($_.Length/1MB), ($_.FullName.Replace((Resolve-Path $root).Path + '\','')) }
 
-      - name: Top 40 largest files
+      - name: Zip it (this is the actual release artifact) and report size
         shell: pwsh
         run: |
-          Get-ChildItem "dist/yt-transcript" -Recurse -File |
-            Sort-Object Length -Descending | Select-Object -First 40 |
-            ForEach-Object { "{0,9:N1} MB  {1}" -f ($_.Length/1MB), ($_.FullName.Replace((Resolve-Path 'dist/yt-transcript').Path + '\','')) }
-
-      - name: Size grouped by top-level folder under _internal
-        shell: pwsh
-        run: |
-          $base = "dist/yt-transcript/_internal"
-          if (Test-Path $base) {
-            Get-ChildItem $base | ForEach-Object {
-              $sz = if ($_.PSIsContainer) { (Get-ChildItem $_.FullName -Recurse -File | Measure-Object Length -Sum).Sum } else { $_.Length }
-              [pscustomobject]@{ MB = [math]::Round($sz/1MB,1); Name = $_.Name }
-            } | Sort-Object MB -Descending | Select-Object -First 30 | Format-Table -AutoSize | Out-String -Width 200
-          }
+          Compress-Archive -Path "dist/yt-transcript/*" -DestinationPath "yt-transcript-windows.zip" -CompressionLevel Optimal -Force
+          $zip = (Get-Item "yt-transcript-windows.zip").Length
+          "==============================================="
+          "RELEASE ZIP (deflate): {0:N1} MB   (vs 203 MB Electron installer)" -f ($zip/1MB)
+          "==============================================="
