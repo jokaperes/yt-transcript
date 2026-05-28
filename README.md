@@ -80,15 +80,17 @@ Audio files (`.mp3`) are deleted after transcription by default.
 
 ## Windows App (recommended)
 
-Download the latest **`YT Transcript-Setup-x.y.z.exe`** from the
-[Releases page](https://github.com/jokaperes/yt-transcript/releases) and run it.
-This is a desktop app (Electron front-end + bundled `faster-whisper` engine) — no
-Python install required. `ffmpeg` is still needed on `PATH` (see Setup above).
+Download the latest **`yt-transcript-windows.zip`** from the
+[Releases page](https://github.com/jokaperes/yt-transcript/releases), extract it
+anywhere, and run **`yt-transcript.exe`**. It's a self-contained build (Tkinter GUI +
+bundled `faster-whisper` engine + `yt-dlp`) — no Python install required. `ffmpeg` is
+still needed on `PATH` (see Setup above).
 
-Once installed, the app **updates itself**: it checks GitHub Releases on launch and
-offers to download/install new versions, so you only install manually once.
+The app **updates itself**: *Check for updates* fetches the latest GitHub release and,
+when a newer version exists, downloads the zip and applies it in place, so you only
+install manually once.
 
-> Building from source? See [Building the Windows installer](#building-the-windows-installer).
+> Building from source? See [Building the Windows app](#building-the-windows-app).
 
 The app supports:
 
@@ -99,7 +101,7 @@ The app supports:
 - **Estimated time remaining** (ETA) shown in the status bar during transcription
 - **Right-click log menu** — Copy selected, Select all, Clear log
 - **System tray icon** — minimize to tray while processing; tooltip shows progress
-- **In-app auto-update** — checks GitHub for the latest release and downloads/installs automatically
+- **In-app self-update** — checks GitHub for the latest release and downloads/applies the new zip in place
 - **Settings persistence** between sessions
 - **Live progress** — yt-dlp download logs, Whisper transcription progress, queue counter (3/5)
 
@@ -110,20 +112,22 @@ automatically writes a normalized copy inside the output folder when needed.
 
 For scripted/CLI use, run the Python engine directly from source (see Usage above).
 
-## Building the Windows installer
+## Building the Windows app
 
-The installer is built by GitHub Actions on every `v*` tag (see
-`.github/workflows/windows-release.yml`):
+The app is built by GitHub Actions on every `v*` tag (see
+`.github/workflows/windows-release.yml`, or run `build-windows.ps1` locally):
 
-1. `build-engine.ps1` builds `transcribe_youtube.py` into a standalone
-   `yt-transcript.exe` with PyInstaller and downloads `yt-dlp.exe`, staging both into
-   `electron/engine/`.
-2. `npm install` then `npm run publish` (electron-builder) bundles that engine inside
-   the Electron app, produces `YT Transcript-Setup-x.y.z.exe` plus the `latest.yml`
-   auto-update feed, and publishes them to GitHub Releases.
+1. PyInstaller bundles `yt_transcript_gui.py` (GUI + in-process `faster-whisper`
+   engine) into a single `dist/yt-transcript/` folder.
+2. Size optimizations: unused ffmpeg video/image encoders are stripped and large
+   optional modules (`hf_xet`, `torch`, `whisper`, …) are excluded — the local-ML
+   native libraries (CTranslate2, onnxruntime VAD, OpenBLAS, ffmpeg audio decode)
+   are the size floor.
+3. `yt-dlp.exe` is staged alongside, and everything is packaged into
+   `yt-transcript-windows.zip` (~110 MB) and published to GitHub Releases.
 
-To cut a release: bump `version` in `electron/package.json`, then push a matching tag,
-e.g. `git tag v2.0.0 && git push origin v2.0.0`.
+To cut a release: bump `__version__` in `yt_transcript_gui.py`, then push a matching
+tag, e.g. `git tag v2.1.0 && git push origin v2.1.0`.
 
 ## Model Choice
 
