@@ -117,7 +117,11 @@ def normalize_cookies_file(cookies: str | None, output_dir: Path, log: Callable[
         raise SystemExit(f"Cookies file does not exist: {source}")
 
     text = source.read_text(encoding="utf-8", errors="replace")
-    fixed = re.sub(r"^\.youtube\.com\tFALSE\t", "youtube.com\tFALSE\t", text, flags=re.MULTILINE)
+    # A dot-prefixed domain with the include-subdomains flag set to FALSE is
+    # malformed Netscape output (old exporter bug). Fix the flag rather than
+    # stripping the dot: a host-only "youtube.com" cookie would never be sent
+    # to www.youtube.com, silently breaking authentication.
+    fixed = re.sub(r"^(\.[^\t]+)\tFALSE\t", r"\1\tTRUE\t", text, flags=re.MULTILINE)
     if fixed == text:
         return str(source)
 
@@ -276,7 +280,23 @@ def download_audio(
 
     if process.returncode != 0:
         details = "\n".join(output_lines[-80:])
-        raise SystemExit(f"yt-dlp failed with exit code {process.returncode}.\n\n{details}")
+        auth_markers = (
+            "sign in to confirm",
+            "cookies are no longer valid",
+            "account cookies are no longer valid",
+            "log in for access",
+            "use --cookies",
+        )
+        lowered = details.lower()
+        hint = ""
+        if any(marker in lowered for marker in auth_markers):
+            hint = (
+                "\n\nYouTube is refusing the request, which usually means the cookies file "
+                "expired or was rotated. Re-export it the durable way: in an incognito window, "
+                "log in with a spare YouTube account, open youtube.com/robots.txt, export the "
+                "cookies, close the window, and never reuse that account in a browser."
+            )
+        raise SystemExit(f"yt-dlp failed with exit code {process.returncode}.\n\n{details}{hint}")
 
     if not printed_paths:
         raise SystemExit("yt-dlp finished, but did not report an audio file path.")

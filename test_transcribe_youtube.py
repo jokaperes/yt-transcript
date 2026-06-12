@@ -154,8 +154,7 @@ def test_normalize_cookies_fixes_dot_prefix(tmp_path: Path) -> None:
     result = normalize_cookies_file(str(cookies), out_dir)
     assert result != str(cookies)
     fixed_content = Path(result).read_text(encoding="utf-8")
-    assert fixed_content.startswith("youtube.com\tFALSE")
-    assert not fixed_content.startswith(".youtube.com")
+    assert fixed_content.startswith(".youtube.com\tTRUE\t")
 
 
 def test_normalize_cookies_none() -> None:
