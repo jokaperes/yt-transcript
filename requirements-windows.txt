@@ -1,4 +1,7 @@
 faster-whisper
+# 4.8.0 wheel fails to import from the PyInstaller bundle on Windows
+# (DLL load failed while importing _core); 4.7.1 is the last known-good.
+ctranslate2==4.7.1
 yt-dlp
 pystray
 Pillow
