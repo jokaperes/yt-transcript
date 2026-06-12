@@ -40,7 +40,7 @@ python transcribe_youtube.py "URL" --language en --device cuda
 To choose output formats:
 
 ```bash
-python transcribe_youtube.py "URL" --format txt --format srt --format vtt --format json
+python transcribe_youtube.py "URL" --format md --format txt --format srt --format vtt --format json
 ```
 
 ### Batch processing
@@ -70,6 +70,7 @@ python transcribe_youtube.py "URL" --cookies /path/to/cookies.txt
 
 All outputs use the pattern `.{lang}.{fmt}`:
 
+- `.pt.md`: Markdown built for feeding an AI — video metadata header (title, channel, URL, date, duration) plus the transcript in timestamped paragraphs (default format)
 - `.pt.txt`: plain transcript with timestamps (default language: Portuguese)
 - `.pt.srt`: SRT subtitles
 - `.pt.vtt`: WebVTT subtitles
@@ -96,7 +97,7 @@ The app supports:
 
 - **Batch URLs** — paste multiple URLs in the text box, one per line; they're processed sequentially with per-video error recovery
 - **Language selection** (Portuguese, English, Spanish, French, etc.)
-- **Output format checkboxes** (TXT, SRT, VTT, JSON)
+- **Output format checkboxes** (MD, TXT, SRT, VTT, JSON)
 - **Paste button** — one-click clipboard paste into the URL box
 - **Estimated time remaining** (ETA) shown in the status bar during transcription
 - **Right-click log menu** — Copy selected, Select all, Clear log

@@ -8,6 +8,7 @@ from transcribe_youtube import (
     safe_name,
     timestamp,
     write_json,
+    write_md,
     write_srt,
     write_txt,
     write_vtt,
@@ -63,6 +64,41 @@ def test_write_srt(tmp_path: Path) -> None:
     content = out.read_text(encoding="utf-8")
     assert "1\n00:00:01,000 --> 00:00:03,500\nHello world" in content
     assert "2\n00:00:04,000 --> 00:00:06,000\nSecond line" in content
+
+
+def test_write_md(tmp_path: Path) -> None:
+    segments = [
+        {"start": 0.0, "end": 2.0, "text": " Olá pessoal."},
+        {"start": 2.1, "end": 4.0, "text": " Bem-vindos."},
+        {"start": 10.0, "end": 12.0, "text": " Novo parágrafo."},
+    ]
+    info = {
+        "title": "Meu Vídeo",
+        "id": "abc123",
+        "uploader": "Canal",
+        "upload_date": "20260610",
+        "duration": 754,
+    }
+    out = tmp_path / "video.pt.md"
+    write_md(out, segments, info)
+    content = out.read_text(encoding="utf-8")
+    assert content.startswith("# Meu Vídeo")
+    assert "- **Channel:** Canal" in content
+    assert "- **URL:** https://www.youtube.com/watch?v=abc123" in content
+    assert "- **Uploaded:** 2026-06-10" in content
+    assert "- **Duration:** 00:12:34" in content
+    assert "## Transcript" in content
+    # Segments 1+2 merge into one paragraph; the >2s gap starts a new one.
+    assert "**[00:00:00]** Olá pessoal. Bem-vindos." in content
+    assert "**[00:00:10]** Novo parágrafo." in content
+
+
+def test_write_md_no_info(tmp_path: Path) -> None:
+    out = tmp_path / "video.pt.md"
+    write_md(out, [{"start": 0.0, "end": 1.0, "text": "Oi"}], {})
+    content = out.read_text(encoding="utf-8")
+    assert content.startswith("# video.pt")
+    assert "**[00:00:00]** Oi" in content
 
 
 def test_write_vtt(tmp_path: Path) -> None:

@@ -34,6 +34,7 @@ from transcribe_youtube import (
     setup_logging,
     transcribe_faster,
     write_json,
+    write_md,
     write_srt,
     write_txt,
     write_vtt,
@@ -46,7 +47,7 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 REPO_OWNER = "jokaperes"
 REPO_NAME = "yt-transcript"
@@ -122,7 +123,7 @@ class App(ttk.Frame):
         self.language = tk.StringVar(value=saved.get("language", "pt"))
         self.format_vars: dict[str, tk.BooleanVar] = {}
         for fmt in OUTPUT_FORMATS:
-            default = fmt == "txt"
+            default = fmt in ("md", "txt")
             self.format_vars[fmt] = tk.BooleanVar(value=saved.get(f"fmt_{fmt}", default))
         self.status = tk.StringVar(value="Ready")
         self.queue_status = tk.StringVar(value="")
@@ -551,7 +552,9 @@ class App(ttk.Frame):
                 for fmt in formats:
                     out_path = stem.with_suffix(f".{language}.{fmt}")
                     try:
-                        if fmt == "txt":
+                        if fmt == "md":
+                            write_md(out_path, segments, info)
+                        elif fmt == "txt":
                             write_txt(out_path, segments)
                         elif fmt == "srt":
                             write_srt(out_path, segments)

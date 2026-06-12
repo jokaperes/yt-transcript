@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const FORMATS = ["txt", "srt", "vtt", "json"];
+const FORMATS = ["md", "txt", "srt", "vtt", "json"];
 
 // Phase -> [start%, weight%] for the overall bar; mirrors the Tkinter weights.
 const PHASE_WEIGHTS = {

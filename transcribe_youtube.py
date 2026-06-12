@@ -22,7 +22,7 @@ LOG_FILE = Path("transcribe_youtube.log")
 DEFAULT_MODEL = "large-v3-turbo"
 DOWNLOAD_TIMEOUT_SECONDS = 900
 ProgressCallback = Callable[[str, float | None, str], None]
-OUTPUT_FORMATS = ("txt", "srt", "vtt", "json")
+OUTPUT_FORMATS = ("md", "txt", "srt", "vtt", "json")
 URL_PATTERN = re.compile(
     r"https?://(?:www\.)?(?:youtube\.com/(?:watch\?.*v=|shorts/|embed/|live/)|youtu\.be/)[\w\-]{11}"
 )
@@ -381,6 +381,51 @@ def write_json(path: Path, segments: list[dict[str, Any]], info: dict[str, Any])
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def write_md(path: Path, segments: list[dict[str, Any]], info: dict[str, Any]) -> None:
+    # Markdown meant to be fed to an AI: a metadata header for context, then
+    # paragraphs carrying a single start timestamp each (one per segment would
+    # just burn the model's attention on noise).
+    lines = [f"# {info.get('title') or path.stem}", ""]
+    if info.get("uploader"):
+        lines.append(f"- **Channel:** {info['uploader']}")
+    if info.get("id"):
+        lines.append(f"- **URL:** https://www.youtube.com/watch?v={info['id']}")
+    upload_date = info.get("upload_date")
+    if isinstance(upload_date, str) and len(upload_date) == 8:
+        lines.append(f"- **Uploaded:** {upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}")
+    if info.get("duration"):
+        lines.append(f"- **Duration:** {timestamp(float(info['duration']))[:8]}")
+    if lines[-1] != "":
+        lines.append("")
+    lines.extend(["## Transcript", ""])
+
+    paragraph: list[str] = []
+    paragraph_start = 0.0
+    prev_end: float | None = None
+
+    def flush() -> None:
+        if paragraph:
+            lines.append(f"**[{timestamp(paragraph_start)[:8]}]** " + " ".join(paragraph))
+            lines.append("")
+            paragraph.clear()
+
+    for seg in segments:
+        text = seg["text"].strip()
+        start = seg["start"]
+        long_gap = prev_end is not None and (start - prev_end) > 2.0
+        too_long = bool(paragraph) and (start - paragraph_start) > 60.0
+        if long_gap or too_long:
+            flush()
+        if text:
+            if not paragraph:
+                paragraph_start = start
+            paragraph.append(text)
+        prev_end = seg.get("end", start)
+    flush()
+
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
 def transcribe_openai(
     audio_path: Path,
     model_name: str,
@@ -562,7 +607,9 @@ def process_single_url(
         for fmt in formats:
             out_path = stem.with_suffix(f".{lang}.{fmt}")
             try:
-                if fmt == "txt":
+                if fmt == "md":
+                    write_md(out_path, segments, info)
+                elif fmt == "txt":
                     write_txt(out_path, segments)
                 elif fmt == "srt":
                     write_srt(out_path, segments)
@@ -685,7 +732,9 @@ def run_json_events_batch(args: argparse.Namespace, urls: list[str], formats: li
             video_files: list[str] = []
             for fmt in formats:
                 out_path = stem.with_suffix(f".{args.language}.{fmt}")
-                if fmt == "txt":
+                if fmt == "md":
+                    write_md(out_path, segments, info)
+                elif fmt == "txt":
                     write_txt(out_path, segments)
                 elif fmt == "srt":
                     write_srt(out_path, segments)
@@ -746,7 +795,7 @@ def main() -> int:
     parser.add_argument("--json-events", action="store_true", help="Emit newline-delimited JSON events on stdout (for the Electron front-end)")
     args = parser.parse_args()
 
-    formats = args.formats or ["txt"]
+    formats = args.formats or ["md"]
     setup_logging()
 
     urls: list[str] = []
