@@ -127,6 +127,15 @@ def normalize_cookies_file(cookies: str | None, output_dir: Path, log: Callable[
 
     output_dir.mkdir(parents=True, exist_ok=True)
     normalized = output_dir / "normalized-youtube-cookies.txt"
+    # yt-dlp rotates YouTube account cookies on every download and saves the
+    # new values back into the file it is given. Regenerating this copy from
+    # the (stale) original on each run would discard those rotated values and
+    # invalidate the account cookies after the first download. Reuse the copy
+    # unless the original export is newer (i.e. a fresh export).
+    if normalized.exists() and normalized.stat().st_mtime > source.stat().st_mtime:
+        if log:
+            log(f"Reusing rotated YouTube cookies: {normalized}")
+        return str(normalized)
     normalized.write_text(fixed, encoding="utf-8")
     if log:
         log(f"Normalized YouTube cookies format: {normalized}")

@@ -193,6 +193,31 @@ def test_normalize_cookies_fixes_dot_prefix(tmp_path: Path) -> None:
     assert fixed_content.startswith(".youtube.com\tTRUE\t")
 
 
+def test_normalize_cookies_reuses_rotated_copy(tmp_path: Path) -> None:
+    import os
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text(
+        ".youtube.com\tFALSE\t/\tFALSE\t0\tVISITOR_INFO1_LIVE\txyz\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "output"
+    result = Path(normalize_cookies_file(str(cookies), out_dir))
+    # Simulate yt-dlp saving rotated cookie values back into the copy.
+    result.write_text(
+        ".youtube.com\tTRUE\t/\tFALSE\t0\tVISITOR_INFO1_LIVE\trotated\n",
+        encoding="utf-8",
+    )
+    os.utime(result, (cookies.stat().st_mtime + 10, cookies.stat().st_mtime + 10))
+    again = Path(normalize_cookies_file(str(cookies), out_dir))
+    assert again == result
+    assert "rotated" in again.read_text(encoding="utf-8")
+    # A fresh export (original newer than the copy) regenerates the copy.
+    os.utime(cookies, (result.stat().st_mtime + 10, result.stat().st_mtime + 10))
+    fresh = Path(normalize_cookies_file(str(cookies), out_dir))
+    assert "rotated" not in fresh.read_text(encoding="utf-8")
+
+
 def test_normalize_cookies_none() -> None:
     assert normalize_cookies_file(None, Path("/tmp")) is None
 
