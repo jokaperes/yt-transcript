@@ -1,6 +1,8 @@
 faster-whisper
-# 4.8.0 wheel fails to import from the PyInstaller bundle on Windows
-# (DLL load failed while importing _core); 4.7.1 is the last known-good.
+# Conservative pin matching the last known-good (May 2026) bundle while the
+# Windows build regression was tracked down. The actual v2.3.0 culprit was
+# stripping av.libs DLLs that PyAV >= 17 hard-links; safe to unpin once a
+# release built with 4.8.x is verified on a real Windows machine.
 ctranslate2==4.7.1
 yt-dlp
 pystray
