@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -140,6 +141,118 @@ def normalize_cookies_file(cookies: str | None, output_dir: Path, log: Callable[
     if log:
         log(f"Normalized YouTube cookies format: {normalized}")
     return str(normalized)
+
+
+CUDA_RUNTIME_PACKAGES = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
+# cudnn64_9.dll is just a loader shim (the ctranslate2 wheel even bundles its
+# own copy), so probing it can succeed while the real libraries are missing.
+# Probe the actual workhorse DLLs instead.
+CUDA_PROBE_DLLS = ("cublas64_12.dll", "cudnn_ops64_9.dll")
+
+
+def cuda_runtime_dir() -> Path:
+    base = os.environ.get("LOCALAPPDATA")
+    if base:
+        return Path(base) / "yt-transcript" / "cuda"
+    return Path.home() / ".cache" / "yt-transcript" / "cuda"
+
+
+def _wire_cuda_dir(bin_dir: Path) -> None:
+    os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(str(bin_dir))
+
+
+def _cuda_dlls_loadable() -> bool:
+    import ctypes
+
+    try:
+        for name in CUDA_PROBE_DLLS:
+            ctypes.WinDLL(name)
+    except OSError:
+        return False
+    return True
+
+
+def _latest_windows_wheel(package: str) -> tuple[str, int]:
+    import urllib.request
+
+    with urllib.request.urlopen(f"https://pypi.org/pypi/{package}/json", timeout=30) as response:
+        data = json.load(response)
+    for entry in data["urls"]:
+        if entry["filename"].endswith("win_amd64.whl"):
+            return entry["url"], int(entry.get("size") or 0)
+    raise RuntimeError(f"No Windows wheel found on PyPI for {package}")
+
+
+def _download_file(url: str, dest: Path, size: int, log: Callable[[str], None]) -> None:
+    import urllib.request
+
+    done = 0
+    next_report = 10
+    with urllib.request.urlopen(url, timeout=60) as response, open(dest, "wb") as out:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+            done += len(chunk)
+            if size and done * 100 / size >= next_report:
+                log(f"  downloaded {done / 1048576:.0f} of {size / 1048576:.0f} MB")
+                next_report += 10
+
+
+def _extract_wheel_dlls(wheel_path: Path, bin_dir: Path) -> int:
+    import zipfile
+
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with zipfile.ZipFile(wheel_path) as wheel:
+        for member in wheel.namelist():
+            if member.lower().endswith(".dll"):
+                target = bin_dir / Path(member).name
+                with wheel.open(member) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                count += 1
+    return count
+
+
+def ensure_cuda_runtime(log: Callable[[str], None] | None = None) -> bool:
+    """Make cuBLAS/cuDNN loadable on Windows, downloading NVIDIA's runtime
+    wheels on first GPU use. Returns False when CUDA cannot be used."""
+    if sys.platform != "win32":
+        return True
+    log = log or log_info
+    if _cuda_dlls_loadable():
+        return True
+    bin_dir = cuda_runtime_dir() / "bin"
+    if bin_dir.exists() and any(bin_dir.glob("cublas64_*.dll")):
+        _wire_cuda_dir(bin_dir)
+        if _cuda_dlls_loadable():
+            return True
+    log(
+        "NVIDIA CUDA runtime (cuBLAS/cuDNN) not found. Downloading it now — "
+        f"about 1.2 GB, one time only, kept in {bin_dir.parent}"
+    )
+    try:
+        for package in CUDA_RUNTIME_PACKAGES:
+            url, size = _latest_windows_wheel(package)
+            log(f"Downloading {package} ({size / 1048576:.0f} MB)")
+            bin_dir.parent.mkdir(parents=True, exist_ok=True)
+            wheel_path = bin_dir.parent / f"{package}.whl"
+            _download_file(url, wheel_path, size, log)
+            extracted = _extract_wheel_dlls(wheel_path, bin_dir)
+            wheel_path.unlink()
+            log(f"Installed {extracted} DLLs from {package}")
+    except Exception as exc:
+        log(f"CUDA runtime download failed: {exc}")
+        return False
+    _wire_cuda_dir(bin_dir)
+    if _cuda_dlls_loadable():
+        log("CUDA runtime ready.")
+        return True
+    log("CUDA runtime is still not loadable after the download.")
+    return False
 
 
 def _parse_ytdlp_line(line: str) -> tuple[float | None, str]:
@@ -490,6 +603,17 @@ def transcribe_faster(
         tqdm.utils.monotonic = lambda: 0
     except Exception:
         pass
+
+    if device in ("cuda", "auto") and sys.platform == "win32":
+        if not shutil.which("nvidia-smi"):
+            if device == "cuda":
+                log("No NVIDIA driver found (nvidia-smi missing). Falling back to CPU (int8).")
+                device = "cpu"
+                compute_type = "int8"
+        elif not ensure_cuda_runtime(log):
+            log("Could not set up the CUDA runtime. Falling back to CPU (int8).")
+            device = "cpu"
+            compute_type = "int8"
 
     log("Importing faster-whisper")
     progress("model", None, "Importing faster-whisper")

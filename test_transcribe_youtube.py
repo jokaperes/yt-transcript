@@ -4,6 +4,8 @@ from pathlib import Path
 
 from transcribe_youtube import (
     OUTPUT_FORMATS,
+    _extract_wheel_dlls,
+    ensure_cuda_runtime,
     parse_urls,
     safe_name,
     timestamp,
@@ -220,6 +222,29 @@ def test_normalize_cookies_reuses_rotated_copy(tmp_path: Path) -> None:
 
 def test_normalize_cookies_none() -> None:
     assert normalize_cookies_file(None, Path("/tmp")) is None
+
+
+def test_extract_wheel_dlls(tmp_path: Path) -> None:
+    import zipfile
+
+    wheel = tmp_path / "fake.whl"
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("nvidia/cublas/bin/cublas64_12.dll", b"dll-bytes")
+        zf.writestr("nvidia/cublas/bin/cublasLt64_12.dll", b"dll-bytes")
+        zf.writestr("nvidia/cublas/include/cublas.h", b"header")
+        zf.writestr("nvidia_cublas_cu12.dist-info/METADATA", b"meta")
+    bin_dir = tmp_path / "bin"
+    assert _extract_wheel_dlls(wheel, bin_dir) == 2
+    assert (bin_dir / "cublas64_12.dll").read_bytes() == b"dll-bytes"
+    assert not (bin_dir / "cublas.h").exists()
+
+
+def test_ensure_cuda_runtime_non_windows() -> None:
+    import sys
+
+    if sys.platform != "win32":
+        # On non-Windows platforms this is a no-op that must not download.
+        assert ensure_cuda_runtime(lambda message: None) is True
 
 
 def test_output_formats_constant() -> None:

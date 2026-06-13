@@ -21,7 +21,11 @@ winget install Gyan.FFmpeg
 choco install ffmpeg
 ```
 
-For NVIDIA GPU acceleration on Windows, install a current NVIDIA driver. `faster-whisper` also needs CUDA/cuDNN runtime DLLs available on `PATH`; if GPU startup fails, install the current CUDA 12 runtime and cuDNN 9 runtime from NVIDIA.
+For NVIDIA GPU acceleration on Windows, install a current NVIDIA driver — that's
+all. On the first GPU run the app downloads the CUDA runtime it needs (cuBLAS +
+cuDNN, about 1.2 GB, one time) into `%LOCALAPPDATA%\yt-transcript\cuda` and uses
+it from there. If the GPU can't be used for any reason, transcription
+automatically falls back to CPU (int8) instead of failing.
 
 ## Usage
 

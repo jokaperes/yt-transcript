@@ -47,7 +47,7 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
-__version__ = "2.3.3"
+__version__ = "2.4.0"
 
 REPO_OWNER = "jokaperes"
 REPO_NAME = "yt-transcript"
@@ -528,18 +528,37 @@ class App(ttk.Frame):
                 self.events.put(("progress", ("model", None, f"Loading model [{i + 1}/{self.total_urls}]")))
                 self._update_tray_tooltip(f"YT Transcript — [{i + 1}/{self.total_urls}] Transcribing")
 
-                text, segments = transcribe_faster(
-                    audio_path,
-                    model,
-                    "transcribe",
-                    language,
-                    device,
-                    effective_compute,
-                    5,
-                    log=lambda message: self.events.put(("log", message)),
-                    progress=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
-                    stop_requested=self.cancel_requested.is_set,
-                )
+                try:
+                    text, segments = transcribe_faster(
+                        audio_path,
+                        model,
+                        "transcribe",
+                        language,
+                        device,
+                        effective_compute,
+                        5,
+                        log=lambda message: self.events.put(("log", message)),
+                        progress=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
+                        stop_requested=self.cancel_requested.is_set,
+                    )
+                except BaseException as exc:
+                    gpu_markers = ("cuda", "cublas", "cudnn", "kernel image", "gpu")
+                    failure = str(exc).lower()
+                    if device == "cpu" or not any(marker in failure for marker in gpu_markers):
+                        raise
+                    self.events.put(("log", f"GPU transcription failed ({exc}). Retrying on CPU (int8)."))
+                    text, segments = transcribe_faster(
+                        audio_path,
+                        model,
+                        "transcribe",
+                        language,
+                        "cpu",
+                        "int8",
+                        5,
+                        log=lambda message: self.events.put(("log", message)),
+                        progress=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
+                        stop_requested=self.cancel_requested.is_set,
+                    )
 
                 if self.cancel_requested.is_set():
                     self.events.put(("log", f"Cancelled after transcription of URL {i + 1}."))
