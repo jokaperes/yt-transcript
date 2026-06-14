@@ -662,6 +662,69 @@ def gpu_diagnostics(device: str, compute_type: str, model_name: str) -> str:
     return "\n".join(lines)
 
 
+def gpu_compute_cap() -> float | None:
+    """Return the GPU compute capability as a float (e.g. 12.0 for an RTX 50-series
+    Blackwell sm_120 card), or None if it can't be read."""
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None
+    try:
+        out = subprocess.run(
+            [smi, "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        rows = [row.strip() for row in (out.stdout or "").splitlines() if row.strip()]
+        if rows:
+            return float(rows[0])
+    except Exception:
+        pass
+    return None
+
+
+def safe_cuda_compute_type(requested: str) -> tuple[str, str | None]:
+    """Pick a compute_type that will not trigger an uncatchable native cuBLAS
+    abort on this GPU.
+
+    On RTX 50-series (Blackwell, sm_120 / compute_cap >= 12.0) the int8 GEMM path
+    aborts inside cuBLAS with CUBLAS_STATUS_NOT_SUPPORTED. That is a C-level
+    abort(), so the GUI's CPU-fallback except-handler never gets a chance to run
+    and the whole process dies. The documented working type there is float16, so
+    we never let int8* reach a Blackwell GPU. We also honour ctranslate2's own
+    supported-types list as a second guard.
+
+    Returns (chosen, note); note is None when nothing changed."""
+    chosen = requested
+    note = None
+
+    cc = gpu_compute_cap()
+    if cc is not None and cc >= 12.0 and requested in ("int8", "int8_float16"):
+        chosen = "float16"
+        note = (
+            f"compute_type {requested!r} aborts on Blackwell (compute_cap {cc}); "
+            f"forcing {chosen!r}"
+        )
+
+    try:
+        import ctranslate2
+
+        supported = set(ctranslate2.get_supported_compute_types("cuda", 0))
+        if supported and chosen not in supported:
+            for candidate in ("float16", "int8_float16", "int8", "float32"):
+                if candidate in supported:
+                    note = (
+                        f"compute_type {chosen!r} not in CUDA supported types "
+                        f"{sorted(supported)}; using {candidate!r}"
+                    )
+                    chosen = candidate
+                    break
+    except Exception:
+        pass
+
+    return chosen, note
+
+
 def transcribe_faster(
     audio_path: Path,
     model_name: str,
@@ -712,6 +775,13 @@ def transcribe_faster(
     diag = gpu_diagnostics(device, compute_type, model_name)
     log(diag)
     write_diag("=== GPU DIAGNOSTICS ===\n" + diag)
+
+    if device == "cuda":
+        safe_compute, note = safe_cuda_compute_type(compute_type)
+        if note:
+            log(f"Adjusting compute type: {note}")
+            write_diag(f"compute-type guard: {note}")
+            compute_type = safe_compute
 
     log("Checking audio duration")
     duration = audio_duration_seconds(audio_path)

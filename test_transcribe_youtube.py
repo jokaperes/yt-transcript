@@ -9,6 +9,7 @@ from transcribe_youtube import (
     ensure_cuda_runtime,
     parse_urls,
     purge_download_cache,
+    safe_cuda_compute_type,
     safe_name,
     timestamp,
     write_json,
@@ -339,3 +340,36 @@ def test_purge_download_cache_removes_orphans(tmp_path: Path) -> None:
 
 def test_purge_download_cache_no_dir(tmp_path: Path) -> None:
     assert purge_download_cache(tmp_path) == 0
+
+
+def test_safe_cuda_compute_type_forces_float16_on_blackwell(monkeypatch) -> None:
+    import transcribe_youtube as ty
+
+    # RTX 50-series reports compute_cap 12.0; int8 GEMM aborts there.
+    monkeypatch.setattr(ty, "gpu_compute_cap", lambda: 12.0)
+    chosen, note = ty.safe_cuda_compute_type("int8")
+    assert chosen == "float16"
+    assert note and "Blackwell" in note
+
+    chosen, note = ty.safe_cuda_compute_type("int8_float16")
+    assert chosen == "float16"
+
+
+def test_safe_cuda_compute_type_keeps_int8_on_older_gpu(monkeypatch) -> None:
+    import transcribe_youtube as ty
+
+    # Ada (compute_cap 8.9) runs int8 fine, so leave it alone.
+    monkeypatch.setattr(ty, "gpu_compute_cap", lambda: 8.9)
+    chosen, note = ty.safe_cuda_compute_type("int8")
+    assert chosen == "int8"
+    assert note is None
+
+
+def test_safe_cuda_compute_type_unknown_gpu_is_noop(monkeypatch) -> None:
+    import transcribe_youtube as ty
+
+    # No nvidia-smi / unreadable cap must not change the request.
+    monkeypatch.setattr(ty, "gpu_compute_cap", lambda: None)
+    chosen, note = ty.safe_cuda_compute_type("float16")
+    assert chosen == "float16"
+    assert note is None
