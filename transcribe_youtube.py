@@ -270,6 +270,33 @@ def _parse_ytdlp_line(line: str) -> tuple[float | None, str]:
     return None, ""
 
 
+DOWNLOAD_CACHE_NAME = ".yt-transcript-cache"
+
+
+def download_cache_dir(output_dir: Path) -> Path:
+    return output_dir / DOWNLOAD_CACHE_NAME
+
+
+def purge_download_cache(output_dir: Path, log: Callable[[str], None] | None = None) -> int:
+    """Delete leftover downloaded audio/info files from previous runs, including
+    ones a native abort() killed before per-video cleanup could run. Safe to call
+    at startup. Returns how many files were removed."""
+    cache = download_cache_dir(output_dir)
+    if not cache.exists():
+        return 0
+    removed = 0
+    for item in cache.iterdir():
+        try:
+            if item.is_file():
+                item.unlink()
+                removed += 1
+        except Exception:
+            pass
+    if removed and log:
+        log(f"Cleaned {removed} leftover download file(s) from a previous run.")
+    return removed
+
+
 def download_audio(
     url: str,
     output_dir: Path,
@@ -281,7 +308,9 @@ def download_audio(
     timeout_seconds: int = DOWNLOAD_TIMEOUT_SECONDS,
 ) -> tuple[Path, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    template = str(output_dir / "%(title).120s [%(id)s].%(ext)s")
+    cache_dir = download_cache_dir(output_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    template = str(cache_dir / "%(title).120s [%(id)s].%(ext)s")
     log = log or log_info
     progress = progress or (lambda phase, percent, detail: None)
     stop_requested = stop_requested or (lambda: False)
@@ -425,9 +454,9 @@ def download_audio(
 
     audio_path = Path(printed_paths[-1]).resolve()
     if not audio_path.exists():
-        candidates = sorted(output_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates = sorted(cache_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not candidates:
-            files = "\n".join(p.name for p in output_dir.glob("*"))
+            files = "\n".join(p.name for p in cache_dir.glob("*"))
             raise SystemExit(
                 f"yt-dlp reported an audio path, but it does not exist: {audio_path}\n\n"
                 f"Files currently in output folder:\n{files}"
@@ -440,6 +469,10 @@ def download_audio(
     info: dict[str, Any] = {}
     if info_path.exists():
         info = json.loads(info_path.read_text(encoding="utf-8"))
+        try:
+            info_path.unlink()  # already parsed into `info`; don't leave it on disk
+        except Exception:
+            pass
     progress("download", 100.0, "Audio downloaded")
 
     return audio_path, info
@@ -856,6 +889,7 @@ def run_json_events_batch(args: argparse.Namespace, urls: list[str], formats: li
     front-end may also simply terminate the process.
     """
     output_dir = Path(args.output_dir).expanduser().resolve()
+    purge_download_cache(output_dir, log=log_info)
     cancel = threading.Event()
 
     def watch_stdin() -> None:
@@ -1018,6 +1052,7 @@ def main() -> int:
         return run_json_events_batch(args, urls, formats)
 
     output_dir = Path(args.output_dir).expanduser().resolve()
+    purge_download_cache(output_dir, log=log_info)
 
     succeeded = 0
     failed = 0

@@ -5,8 +5,10 @@ from pathlib import Path
 from transcribe_youtube import (
     OUTPUT_FORMATS,
     _extract_wheel_dlls,
+    download_cache_dir,
     ensure_cuda_runtime,
     parse_urls,
+    purge_download_cache,
     safe_name,
     timestamp,
     write_json,
@@ -318,3 +320,22 @@ class TestParseUrls:
         urls = parse_urls(text)
         assert len(urls) == 1
         assert urls[0] == "https://example.com/video.mp4"
+
+def test_purge_download_cache_removes_orphans(tmp_path: Path) -> None:
+    cache = download_cache_dir(tmp_path)
+    cache.mkdir(parents=True)
+    (cache / "Video [abc123].mp3").write_bytes(b"audio")
+    (cache / "Video [abc123].info.json").write_text("{}", encoding="utf-8")
+    # a transcript in the real output dir must be left untouched
+    keep = tmp_path / "Video.pt.md"
+    keep.write_text("transcript", encoding="utf-8")
+
+    removed = purge_download_cache(tmp_path)
+
+    assert removed == 2
+    assert list(cache.iterdir()) == []
+    assert keep.exists()
+
+
+def test_purge_download_cache_no_dir(tmp_path: Path) -> None:
+    assert purge_download_cache(tmp_path) == 0

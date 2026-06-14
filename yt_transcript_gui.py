@@ -30,6 +30,7 @@ from transcribe_youtube import (
     check_dependencies,
     download_audio,
     parse_urls,
+    purge_download_cache,
     safe_name,
     setup_logging,
     transcribe_faster,
@@ -47,7 +48,7 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
-__version__ = "2.4.1"
+__version__ = "2.4.2"
 
 REPO_OWNER = "jokaperes"
 REPO_NAME = "yt-transcript"
@@ -497,6 +498,10 @@ class App(ttk.Frame):
 
         all_output_files: list[Path] = []
 
+        # Sweep any audio left behind by a previous crash (a native abort skips
+        # the per-video cleanup), so downloads don't pile up on disk.
+        purge_download_cache(output_dir, log=lambda message: self.events.put(("log", message)))
+
         for i, url in enumerate(urls):
             if self.cancel_requested.is_set():
                 self.events.put(("log", f"Cancelled. Processed {i}/{self.total_urls} URL(s)."))
@@ -509,6 +514,7 @@ class App(ttk.Frame):
             self.events.put(("batch_phase", (i, self.total_urls)))
             self._update_tray_tooltip(f"YT Transcript — [{i + 1}/{self.total_urls}] Downloading")
 
+            audio_path = None
             try:
                 audio_path, info = download_audio(
                     url,
@@ -586,11 +592,6 @@ class App(ttk.Frame):
                     except Exception as exc:
                         self.events.put(("log", f"Failed to write {fmt}: {exc}"))
 
-                try:
-                    audio_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
                 self.completed_urls += 1
                 self.events.put(("log", f"Done: {title}"))
 
@@ -604,6 +605,12 @@ class App(ttk.Frame):
                 self.events.put(("url_failed", url))
                 self.events.put(("separator", None))
                 continue
+            finally:
+                if audio_path is not None:
+                    try:
+                        audio_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
             self.events.put(("separator", None))
 
