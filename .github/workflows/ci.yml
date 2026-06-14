@@ -1,0 +1,33 @@
+name: CI
+
+# Runs the test suite and a compile check on every push and pull request, so a
+# regression can't reach master (and the in-app self-update) unnoticed. The
+# engine imports its heavy deps (faster-whisper, ctranslate2, av) lazily inside
+# functions, so the tests need nothing but pytest — keeping this fast.
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install -U pip pytest
+
+      - name: Compile check
+        run: python -m py_compile transcribe_youtube.py yt_transcript_gui.py
+
+      - name: Run tests
+        run: python -m pytest -q
