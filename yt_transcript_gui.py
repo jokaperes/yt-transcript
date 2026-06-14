@@ -29,6 +29,7 @@ from transcribe_youtube import (
     OUTPUT_FORMATS,
     check_dependencies,
     download_audio,
+    normalize_runtime_for_platform,
     parse_urls,
     purge_download_cache,
     safe_name,
@@ -426,7 +427,7 @@ class App(ttk.Frame):
         if not any(self.format_vars[fmt].get() for fmt in OUTPUT_FORMATS):
             messagebox.showerror("No format selected", "Select at least one output format.")
             return
-        if self.device.get().strip() == "cuda" and not shutil.which("nvidia-smi"):
+        if sys.platform != "darwin" and self.device.get().strip() == "cuda" and not shutil.which("nvidia-smi"):
             self._append_log("nvidia-smi was not found. Continuing anyway, but CUDA may fail if the NVIDIA driver is not installed.")
         if not shutil.which("node"):
             self._append_log("Node.js was not found. Some YouTube videos may fail player challenge solving without it.")
@@ -488,9 +489,9 @@ class App(ttk.Frame):
         language = self.language.get().strip() or "pt"
         formats = [fmt for fmt in OUTPUT_FORMATS if self.format_vars[fmt].get()]
 
-        effective_compute = compute_type
-        if device == "cpu":
-            effective_compute = "int8"
+        device, effective_compute, platform_note = normalize_runtime_for_platform(device, compute_type)
+        if platform_note:
+            self.events.put(("log", platform_note))
 
         all_output_files: list[Path] = []
 

@@ -167,6 +167,25 @@ Built by GitHub Actions on every `v*` tag
 3. Everything is zipped to `yt-transcript-windows.zip` (~95 MB) and published to
    Releases.
 
+## Building the macOS Apple Silicon app
+
+Built by GitHub Actions on every `v*` tag
+(`.github/workflows/macos-release.yml`):
+
+1. PyInstaller bundles `yt_transcript_gui.py` on `macos-14` (arm64) into
+   `dist/yt-transcript/` (onedir).
+2. The macOS runtime forces CPU/int8 because `faster-whisper` / CTranslate2 does
+   not provide a Metal backend.
+3. Everything is packaged as `yt-transcript-macos-arm64.tar.gz` and published to
+   Releases.
+
+The macOS app is unsigned and not notarized. On first launch, if Gatekeeper says
+the app cannot be opened because the developer cannot be verified, run:
+
+```bash
+xattr -dr com.apple.quarantine yt-transcript.app
+```
+
 To cut a release: bump `__version__` in `yt_transcript_gui.py`, then push a
 matching tag, e.g. `git tag v2.5.0 && git push origin v2.5.0`.
 
@@ -345,6 +364,26 @@ Buildado pelo GitHub Actions a cada tag `v*`
    nativas de ML (CTranslate2, onnxruntime VAD, OpenBLAS, ffmpeg) são o piso de
    tamanho.
 3. Tudo é zipado em `yt-transcript-windows.zip` (~95 MB) e publicado nas Releases.
+
+## Buildando o app macOS Apple Silicon
+
+Buildado pelo GitHub Actions a cada tag `v*`
+(`.github/workflows/macos-release.yml`):
+
+1. O PyInstaller empacota o `yt_transcript_gui.py` no `macos-14` (arm64) em
+   `dist/yt-transcript/` (onedir).
+2. O runtime do macOS forca CPU/int8 porque `faster-whisper` / CTranslate2 nao
+   tem backend Metal.
+3. Tudo e empacotado como `yt-transcript-macos-arm64.tar.gz` e publicado nas
+   Releases.
+
+O app macOS nao e assinado nem notarizado. No primeiro launch, se o Gatekeeper
+disser que o app nao pode ser aberto porque o desenvolvedor nao foi verificado,
+rode:
+
+```bash
+xattr -dr com.apple.quarantine yt-transcript.app
+```
 
 Pra cortar uma release: suba o `__version__` no `yt_transcript_gui.py` e empurre
 uma tag correspondente, ex.: `git tag v2.5.0 && git push origin v2.5.0`.
