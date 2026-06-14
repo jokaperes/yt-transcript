@@ -574,6 +574,61 @@ def transcribe_openai(
     return result["text"].strip(), result.get("segments", [])
 
 
+def _diag_file() -> Path:
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path.cwd()
+    return base / "yt-transcript-gpu-diag.log"
+
+
+def write_diag(text: str) -> None:
+    """Append to the GPU diagnostics file, flushed to disk so it survives a
+    native abort() that would otherwise discard buffered UI/log output."""
+    try:
+        with open(_diag_file(), "a", encoding="utf-8") as handle:
+            handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        pass
+
+
+def gpu_diagnostics(device: str, compute_type: str, model_name: str) -> str:
+    """Collect what the GPU and the ctranslate2 build actually support. The
+    supported-compute-types line is the decisive signal: if 'float16' is missing
+    on a CUDA device, the wheel has no working kernels for this GPU (e.g. a
+    Blackwell sm_120 card on a wheel built without sm_120 kernels)."""
+    lines = [f"requested: device={device} compute_type={compute_type} model={model_name}"]
+    try:
+        import ctranslate2
+
+        lines.append(f"ctranslate2 version: {ctranslate2.__version__}")
+        try:
+            lines.append(f"ctranslate2 CUDA device count: {ctranslate2.get_cuda_device_count()}")
+        except Exception as exc:
+            lines.append(f"get_cuda_device_count failed: {exc}")
+        try:
+            supported = ctranslate2.get_supported_compute_types("cuda", 0)
+            lines.append(f"CUDA supported compute types: {sorted(supported)}")
+        except Exception as exc:
+            lines.append(f"get_supported_compute_types(cuda) failed: {exc}")
+    except Exception as exc:
+        lines.append(f"import ctranslate2 failed: {exc}")
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        try:
+            out = subprocess.run(
+                [smi, "--query-gpu=name,compute_cap,driver_version,memory.total", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            lines.append(f"nvidia-smi: {(out.stdout or out.stderr).strip()}")
+        except Exception as exc:
+            lines.append(f"nvidia-smi failed: {exc}")
+    else:
+        lines.append("nvidia-smi not found")
+    return "\n".join(lines)
+
+
 def transcribe_faster(
     audio_path: Path,
     model_name: str,
@@ -618,13 +673,20 @@ def transcribe_faster(
     log("Importing faster-whisper")
     progress("model", None, "Importing faster-whisper")
 
+    os.environ.setdefault("CT2_VERBOSE", "1")
     from faster_whisper import WhisperModel
+
+    diag = gpu_diagnostics(device, compute_type, model_name)
+    log(diag)
+    write_diag("=== GPU DIAGNOSTICS ===\n" + diag)
 
     log("Checking audio duration")
     duration = audio_duration_seconds(audio_path)
     progress("model", None, f"Loading {model_name}")
+    write_diag(f"about to load WhisperModel (device={device}, compute_type={compute_type})")
     try:
         model = WhisperModel(model_name, device=device, compute_type=compute_type)
+        write_diag("WhisperModel loaded OK")
     except Exception as exc:
         if device == "cuda":
             raise SystemExit(
@@ -638,6 +700,7 @@ def transcribe_faster(
     log("Model loaded. Starting Whisper transcription.")
     progress("transcribe", 0.0, "Model loaded")
 
+    write_diag("about to start decode (model.transcribe)")
     segments_iter, _ = model.transcribe(
         str(audio_path),
         language=language,
@@ -649,6 +712,8 @@ def transcribe_faster(
     segments: list[dict[str, Any]] = []
     try:
         for index, segment in enumerate(segments_iter):
+            if index == 0:
+                write_diag("first segment decoded OK (GPU pipeline working)")
             if stop_requested():
                 raise SystemExit("Transcription cancelled.")
             segments.append(
