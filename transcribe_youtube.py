@@ -581,6 +581,22 @@ def write_md(path: Path, segments: list[dict[str, Any]], info: dict[str, Any]) -
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
+def write_output(fmt: str, path: Path, segments: list[dict[str, Any]], info: dict[str, Any]) -> None:
+    # Single dispatch point for the per-format writers. Writers keep their own
+    # signatures (some need `info`, some don't), so a plain if/elif is clearer
+    # than a dict of mismatched lambdas. ponytail: callers wrap their own logging.
+    if fmt == "md":
+        write_md(path, segments, info)
+    elif fmt == "txt":
+        write_txt(path, segments)
+    elif fmt == "srt":
+        write_srt(path, segments)
+    elif fmt == "vtt":
+        write_vtt(path, segments)
+    elif fmt == "json":
+        write_json(path, segments, info)
+
+
 def transcribe_openai(
     audio_path: Path,
     model_name: str,
@@ -908,16 +924,7 @@ def process_single_url(
         for fmt in formats:
             out_path = stem.with_suffix(f".{lang}.{fmt}")
             try:
-                if fmt == "md":
-                    write_md(out_path, segments, info)
-                elif fmt == "txt":
-                    write_txt(out_path, segments)
-                elif fmt == "srt":
-                    write_srt(out_path, segments)
-                elif fmt == "vtt":
-                    write_vtt(out_path, segments)
-                elif fmt == "json":
-                    write_json(out_path, segments, info)
+                write_output(fmt, out_path, segments, info)
                 output_files.append(out_path)
                 log_info(f"Wrote {fmt}: {out_path}")
             except Exception as exc:
@@ -1034,16 +1041,7 @@ def run_json_events_batch(args: argparse.Namespace, urls: list[str], formats: li
             video_files: list[str] = []
             for fmt in formats:
                 out_path = stem.with_suffix(f".{args.language}.{fmt}")
-                if fmt == "md":
-                    write_md(out_path, segments, info)
-                elif fmt == "txt":
-                    write_txt(out_path, segments)
-                elif fmt == "srt":
-                    write_srt(out_path, segments)
-                elif fmt == "vtt":
-                    write_vtt(out_path, segments)
-                elif fmt == "json":
-                    write_json(out_path, segments, info)
+                write_output(fmt, out_path, segments, info)
                 video_files.append(str(out_path))
                 all_files.append(str(out_path))
                 log_cb(f"Wrote {fmt}: {out_path}")

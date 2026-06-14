@@ -34,11 +34,7 @@ from transcribe_youtube import (
     safe_name,
     setup_logging,
     transcribe_faster,
-    write_json,
-    write_md,
-    write_srt,
-    write_txt,
-    write_vtt,
+    write_output,
 )
 
 try:
@@ -48,7 +44,7 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
-__version__ = "2.4.4"
+__version__ = "2.4.5"
 
 REPO_OWNER = "jokaperes"
 REPO_NAME = "yt-transcript"
@@ -577,16 +573,7 @@ class App(ttk.Frame):
                 for fmt in formats:
                     out_path = stem.with_suffix(f".{language}.{fmt}")
                     try:
-                        if fmt == "md":
-                            write_md(out_path, segments, info)
-                        elif fmt == "txt":
-                            write_txt(out_path, segments)
-                        elif fmt == "srt":
-                            write_srt(out_path, segments)
-                        elif fmt == "vtt":
-                            write_vtt(out_path, segments)
-                        elif fmt == "json":
-                            write_json(out_path, segments, info)
+                        write_output(fmt, out_path, segments, info)
                         all_output_files.append(out_path)
                         self.events.put(("log", f"Wrote {fmt}: {out_path}"))
                     except Exception as exc:
