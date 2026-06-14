@@ -47,7 +47,7 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
-__version__ = "2.4.0"
+__version__ = "2.4.1"
 
 REPO_OWNER = "jokaperes"
 REPO_NAME = "yt-transcript"
