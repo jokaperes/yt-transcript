@@ -48,7 +48,7 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
-__version__ = "2.4.3"
+__version__ = "2.4.4"
 
 REPO_OWNER = "jokaperes"
 REPO_NAME = "yt-transcript"
@@ -839,16 +839,43 @@ class App(ttk.Frame):
                 exe_dir = Path(sys.executable).parent
                 if platform.system() == "Windows":
                     bat_path = exe_dir / "update-inplace.bat"
+                    pid = os.getpid()
+                    exe_name = Path(sys.executable).name
+                    stage_dir = temp_dir / "staging"
+                    # Wait for THIS process (and its memory-mapped .pyd/.dll) to
+                    # actually exit before touching the install, then extract to a
+                    # staging dir and robocopy it over the install. We never
+                    # extracted-over-the-running-app (that gave "Access denied" /
+                    # "in use by another process" on the locked DLLs), and robocopy
+                    # without /PURGE overwrites the app but keeps user data
+                    # (settings.json, logs, the download cache, the diag log).
                     bat_content = (
                         "@echo off\r\n"
                         "cd /d \"%~dp0\"\r\n"
-                        "echo Waiting for app to close...\r\n"
-                        "powershell -Command \"Start-Sleep -Seconds 3\"\r\n"
+                        f"echo Waiting for app (PID {pid}) to close...\r\n"
+                        ":waitloop\r\n"
+                        f"tasklist /FI \"PID eq {pid}\" 2>nul | find \"{pid}\" >nul\r\n"
+                        "if not errorlevel 1 (\r\n"
+                        "    powershell -NoProfile -Command \"Start-Sleep -Milliseconds 500\"\r\n"
+                        "    goto waitloop\r\n"
+                        ")\r\n"
+                        "powershell -NoProfile -Command \"Start-Sleep -Milliseconds 800\"\r\n"
                         f"echo Extracting v{new_version}...\r\n"
-                        f"powershell -Command \"Expand-Archive -Path '{zip_path}' -DestinationPath '.' -Force\"\r\n"
-                        "echo Done! Restart the app.\r\n"
-                        "pause\r\n"
-                        f"del \"{bat_path}\"\r\n"
+                        f"if exist \"{stage_dir}\" rmdir /s /q \"{stage_dir}\"\r\n"
+                        f"powershell -NoProfile -Command \"Expand-Archive -Path '{zip_path}' -DestinationPath '{stage_dir}' -Force\"\r\n"
+                        "echo Installing update...\r\n"
+                        f"robocopy \"{stage_dir}\" \"%~dp0.\" /E /IS /IT /R:8 /W:1 >nul\r\n"
+                        "if errorlevel 8 (\r\n"
+                        "    echo Update FAILED. The app files may be locked. Close any running copy and try again.\r\n"
+                        "    pause\r\n"
+                        "    goto cleanup\r\n"
+                        ")\r\n"
+                        f"echo Update complete. Restarting v{new_version}...\r\n"
+                        f"start \"\" \"%~dp0{exe_name}\"\r\n"
+                        ":cleanup\r\n"
+                        f"rmdir /s /q \"{stage_dir}\" 2>nul\r\n"
+                        f"del \"{zip_path}\" 2>nul\r\n"
+                        "(goto) 2>nul & del \"%~f0\"\r\n"
                     )
                     bat_path.write_text(bat_content, encoding="utf-8")
                     subprocess.Popen(
@@ -857,6 +884,9 @@ class App(ttk.Frame):
                         shell=True,
                     )
                     self.root.after(500, self._quit_app)
+                    # The updater bat waits on this PID; guarantee it dies even if
+                    # mainloop teardown hangs, otherwise the bat loops forever.
+                    self.root.after(2500, lambda: os._exit(0))
                 else:
                     import zipfile
                     with zipfile.ZipFile(zip_path, "r") as zf:
