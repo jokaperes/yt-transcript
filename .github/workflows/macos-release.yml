@@ -49,13 +49,23 @@ jobs:
             --exclude-module pandas \
             yt_transcript_gui.py
 
-      - name: Stage README alongside the app
-        run: cp README.md dist/yt-transcript/README.md
+      - name: Stage release directory
+        run: |
+          mkdir -p release/yt-transcript-macos-arm64
+          cp -R dist/yt-transcript.app release/yt-transcript-macos-arm64/
+          cp README.md release/yt-transcript-macos-arm64/README.md
 
       - name: Package release tarball
         run: |
-          tar -czf yt-transcript-macos-arm64.tar.gz -C dist yt-transcript
+          tar -czf yt-transcript-macos-arm64.tar.gz -C release yt-transcript-macos-arm64
           du -h yt-transcript-macos-arm64.tar.gz
+
+      - name: Check macOS artifact shape
+        run: |
+          ls -la dist
+          test -d dist/yt-transcript.app
+          tar -tzf yt-transcript-macos-arm64.tar.gz
+          tar -tzf yt-transcript-macos-arm64.tar.gz | grep -qx 'yt-transcript-macos-arm64/yt-transcript.app/'
 
       - name: Publish to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/')

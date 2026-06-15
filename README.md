@@ -176,8 +176,8 @@ Built by GitHub Actions on every `v*` tag
    `dist/yt-transcript/` (onedir).
 2. The macOS runtime forces CPU/int8 because `faster-whisper` / CTranslate2 does
    not provide a Metal backend.
-3. Everything is packaged as `yt-transcript-macos-arm64.tar.gz` and published to
-   Releases.
+3. Everything is packaged as `yt-transcript-macos-arm64.tar.gz` with
+   `yt-transcript.app` plus this README and published to Releases.
 
 The macOS app is unsigned and not notarized. On first launch, if Gatekeeper says
 the app cannot be opened because the developer cannot be verified, run:
@@ -374,8 +374,8 @@ Buildado pelo GitHub Actions a cada tag `v*`
    `dist/yt-transcript/` (onedir).
 2. O runtime do macOS forca CPU/int8 porque `faster-whisper` / CTranslate2 nao
    tem backend Metal.
-3. Tudo e empacotado como `yt-transcript-macos-arm64.tar.gz` e publicado nas
-   Releases.
+3. Tudo e empacotado como `yt-transcript-macos-arm64.tar.gz` com
+   `yt-transcript.app` mais este README e publicado nas Releases.
 
 O app macOS nao e assinado nem notarizado. No primeiro launch, se o Gatekeeper
 disser que o app nao pode ser aberto porque o desenvolvedor nao foi verificado,
