@@ -7,6 +7,7 @@ from transcribe_youtube import (
     _extract_wheel_dlls,
     download_cache_dir,
     ensure_cuda_runtime,
+    normalize_runtime_for_platform,
     parse_urls,
     purge_download_cache,
     safe_cuda_compute_type,
@@ -248,6 +249,20 @@ def test_ensure_cuda_runtime_non_windows() -> None:
     if sys.platform != "win32":
         # On non-Windows platforms this is a no-op that must not download.
         assert ensure_cuda_runtime(lambda message: None) is True
+
+
+def test_normalize_runtime_for_platform_forces_cpu_on_macos() -> None:
+    device, compute_type, note = normalize_runtime_for_platform("cuda", "float16", platform="darwin")
+    assert device == "cpu"
+    assert compute_type == "int8"
+    assert note and "CPU-only" in note
+
+
+def test_normalize_runtime_for_platform_keeps_cuda_on_windows() -> None:
+    device, compute_type, note = normalize_runtime_for_platform("cuda", "float16", platform="win32")
+    assert device == "cuda"
+    assert compute_type == "float16"
+    assert note is None
 
 
 def test_output_formats_constant() -> None:

@@ -741,6 +741,19 @@ def safe_cuda_compute_type(requested: str) -> tuple[str, str | None]:
     return chosen, note
 
 
+def normalize_runtime_for_platform(
+    device: str,
+    compute_type: str,
+    platform: str | None = None,
+) -> tuple[str, str, str | None]:
+    platform = platform or sys.platform
+    if platform == "darwin" and device in ("cuda", "auto"):
+        return "cpu", "int8", "Apple Silicon builds run CPU-only; forcing device=cpu compute_type=int8."
+    if device == "cpu":
+        return device, "int8", None
+    return device, compute_type, None
+
+
 def transcribe_faster(
     audio_path: Path,
     model_name: str,
@@ -770,6 +783,10 @@ def transcribe_faster(
         tqdm.utils.monotonic = lambda: 0
     except Exception:
         pass
+
+    device, compute_type, platform_note = normalize_runtime_for_platform(device, compute_type)
+    if platform_note:
+        log(platform_note)
 
     if device in ("cuda", "auto") and sys.platform == "win32":
         if not shutil.which("nvidia-smi"):
@@ -986,13 +1003,15 @@ def run_json_events_batch(args: argparse.Namespace, urls: list[str], formats: li
     def progress_cb(phase: str, percent: float | None, detail: str) -> None:
         emit_event({"type": "progress", "phase": phase, "percent": percent, "detail": detail})
 
-    effective_compute = "int8" if args.device == "cpu" else args.compute_type
+    args.device, effective_compute, platform_note = normalize_runtime_for_platform(args.device, args.compute_type)
     total = len(urls)
     completed = 0
     failed = 0
     all_files: list[str] = []
 
     emit_event({"type": "batch_start", "total": total})
+    if platform_note:
+        log_cb(platform_note)
 
     for i, url in enumerate(urls, 1):
         if cancel.is_set():
@@ -1097,6 +1116,9 @@ def main() -> int:
 
     formats = args.formats or ["md"]
     setup_logging()
+    args.device, args.compute_type, platform_note = normalize_runtime_for_platform(args.device, args.compute_type)
+    if platform_note:
+        log_info(platform_note)
 
     urls: list[str] = []
     if args.url:
