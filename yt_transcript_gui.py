@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import faulthandler
 import json
 import logging
@@ -9,6 +10,7 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -55,6 +57,201 @@ SETTINGS_PATH = Path(sys.executable).with_name("settings.json") if getattr(sys, 
 
 log = logging.getLogger(__name__)
 
+
+class SingleInstance:
+    """Hold a Windows named mutex for the lifetime of the GUI process."""
+
+    _MUTEX_NAME = "Local\\jokaperes.yt-transcript.gui"
+    _ERROR_ALREADY_EXISTS = 183
+
+    def __init__(self, handle: int | None = None) -> None:
+        self.handle = handle
+
+    @classmethod
+    def acquire(cls) -> SingleInstance | None:
+        if sys.platform != "win32":
+            return cls()
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_bool
+
+        handle = kernel32.CreateMutexW(None, False, cls._MUTEX_NAME)
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if ctypes.get_last_error() == cls._ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            return None
+        return cls(handle)
+
+    def close(self) -> None:
+        if self.handle is None or sys.platform != "win32":
+            return
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        kernel32.CloseHandle(self.handle)
+        self.handle = None
+
+def _worker_command() -> list[str]:
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-transcribe-worker"]
+    return [sys.executable, str(Path(__file__).resolve()), "--run-transcribe-worker"]
+
+
+def transcribe_isolated(
+    audio_path: Path,
+    model_name: str,
+    task: str,
+    language: str,
+    device: str,
+    compute_type: str,
+    beam_size: int,
+    log_callback: Any,
+    progress_callback: Any,
+    stop_requested: Any,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Run the native Whisper/CUDA stack out-of-process.
+
+    CTranslate2 can call abort(), which cannot be caught by Python. Keeping it in
+    a child process lets the GUI survive and retry on CPU.
+    """
+    request = {
+        "audio_path": str(audio_path),
+        "model_name": model_name,
+        "task": task,
+        "language": language,
+        "device": device,
+        "compute_type": compute_type,
+        "beam_size": beam_size,
+    }
+    with tempfile.TemporaryDirectory(prefix="yt-transcript-worker-") as tmp:
+        request_path = Path(tmp) / "request.json"
+        result_path = Path(tmp) / "result.json"
+        request_path.write_text(json.dumps(request), encoding="utf-8")
+
+        command = [*_worker_command(), str(request_path), str(result_path)]
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+        )
+
+        output: queue.Queue[str | None] = queue.Queue()
+
+        def read_output() -> None:
+            assert process.stdout is not None
+            try:
+                for line in process.stdout:
+                    output.put(line)
+            finally:
+                output.put(None)
+
+        threading.Thread(target=read_output, daemon=True, name="transcription-worker-output").start()
+        worker_error = ""
+        cancelled = False
+        reader_done = False
+
+        while process.poll() is None or not reader_done:
+            if stop_requested() and process.poll() is None:
+                cancelled = True
+                process.terminate()
+
+            try:
+                line = output.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if line is None:
+                reader_done = True
+                continue
+
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError:
+                log_callback(f"Worker: {stripped}")
+                continue
+
+            if event.get("type") == "log":
+                log_callback(str(event.get("message", "")))
+            elif event.get("type") == "progress":
+                progress_callback(event.get("phase"), event.get("percent"), event.get("detail", ""))
+            elif event.get("type") == "error":
+                worker_error = str(event.get("message", ""))
+
+        return_code = process.wait()
+        if cancelled:
+            raise SystemExit("Transcription cancelled.")
+
+        if result_path.exists():
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+                text = str(result["text"])
+                segments = list(result["segments"])
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                worker_error = f"Invalid transcription worker result: {exc}"
+            else:
+                if return_code != 0:
+                    log_callback(
+                        f"GPU worker exited with code {return_code} during native cleanup; "
+                        "the completed transcript was recovered safely."
+                    )
+                return text, segments
+
+        detail = worker_error or f"{device.upper()} transcription worker exited unexpectedly (code {return_code})"
+        raise RuntimeError(f"{detail}; native backend crash is likely.")
+
+
+def run_transcription_worker(request_path: Path, result_path: Path) -> int:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+
+    def emit(event: dict[str, Any]) -> None:
+        print(json.dumps(event, ensure_ascii=False), flush=True)
+
+    def save_result(text: str, segments: list[dict[str, Any]]) -> None:
+        result_path.write_text(
+            json.dumps({"text": text, "segments": segments}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    try:
+        text, segments = transcribe_faster(
+            Path(request["audio_path"]),
+            str(request["model_name"]),
+            str(request["task"]),
+            str(request["language"]),
+            str(request["device"]),
+            str(request["compute_type"]),
+            int(request["beam_size"]),
+            log=lambda message: emit({"type": "log", "message": message}),
+            progress=lambda phase, percent, detail: emit(
+                {"type": "progress", "phase": phase, "percent": percent, "detail": detail}
+            ),
+            stop_requested=lambda: False,
+            result_callback=save_result,
+        )
+        save_result(text, segments)
+        return 0
+    except BaseException as exc:
+        emit({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+        return 1
+
+
+def _reattach_frozen_output() -> None:
+    if not getattr(sys, "frozen", False):
+        return
+    pipe = open(1, "w", encoding="utf-8", errors="replace", buffering=1, closefd=False)
+    sys.stdout = pipe
+    sys.stderr = pipe
 
 def load_settings() -> dict:
     try:
@@ -137,8 +334,10 @@ class App(ttk.Frame):
         self.url_text: tk.Text | None = None
 
         self._tray_icon: Any = None
+        self._tray_thread: threading.Thread | None = None
         self._tray_running = False
         self._tray_notify_text = ""
+        self._quit_pending = False
 
         self._build()
         self._setup_tray()
@@ -281,7 +480,8 @@ class App(ttk.Frame):
             )
             self._tray_icon = pystray.Icon("yt-transcript", icon_image, "YT Transcript", menu)
             self._tray_running = True
-            threading.Thread(target=self._tray_icon.run, daemon=True).start()
+            self._tray_thread = threading.Thread(target=self._tray_icon.run, daemon=True, name="tray-icon")
+            self._tray_thread.start()
             self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         except Exception as exc:
             log.warning("Tray icon setup failed: %s", exc)
@@ -317,11 +517,23 @@ class App(ttk.Frame):
         self.root.lift()
 
     def _quit_app(self) -> None:
+        if self.worker and self.worker.is_alive():
+            if not self._quit_pending:
+                self._quit_pending = True
+                self.cancel_requested.set()
+                self.status.set("Closing after current operation")
+                self._append_log("Quit requested — waiting for the active worker to stop safely.", "warning")
+                self._update_tray_tooltip("YT Transcript — closing safely...")
+            self.root.after(100, self._quit_app)
+            return
+
         if self._tray_icon:
             try:
                 self._tray_icon.stop()
             except Exception:
                 pass
+        if self._tray_thread and self._tray_thread.is_alive():
+            self._tray_thread.join(timeout=2)
         self.root.quit()
 
     def _paste_urls(self) -> None:
@@ -532,7 +744,7 @@ class App(ttk.Frame):
                 self._update_tray_tooltip(f"YT Transcript — [{i + 1}/{self.total_urls}] Transcribing")
 
                 try:
-                    text, segments = transcribe_faster(
+                    text, segments = transcribe_isolated(
                         audio_path,
                         model,
                         "transcribe",
@@ -540,8 +752,8 @@ class App(ttk.Frame):
                         device,
                         effective_compute,
                         5,
-                        log=lambda message: self.events.put(("log", message)),
-                        progress=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
+                        log_callback=lambda message: self.events.put(("log", message)),
+                        progress_callback=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
                         stop_requested=self.cancel_requested.is_set,
                     )
                 except BaseException as exc:
@@ -550,7 +762,7 @@ class App(ttk.Frame):
                     if device == "cpu" or not any(marker in failure for marker in gpu_markers):
                         raise
                     self.events.put(("log", f"GPU transcription failed ({exc}). Retrying on CPU (int8)."))
-                    text, segments = transcribe_faster(
+                    text, segments = transcribe_isolated(
                         audio_path,
                         model,
                         "transcribe",
@@ -558,8 +770,8 @@ class App(ttk.Frame):
                         "cpu",
                         "int8",
                         5,
-                        log=lambda message: self.events.put(("log", message)),
-                        progress=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
+                        log_callback=lambda message: self.events.put(("log", message)),
+                        progress_callback=lambda phase, percent, detail: self.events.put(("progress", (phase, percent, detail))),
                         stop_requested=self.cancel_requested.is_set,
                     )
 
@@ -922,6 +1134,16 @@ class App(ttk.Frame):
 def main() -> None:
     setup_logging()
     install_crash_handlers()
+    instance = SingleInstance.acquire()
+    if instance is None:
+        if sys.platform == "win32":
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "YT Transcript is already running. Check the taskbar or system tray.",
+                "YT Transcript",
+                0x40,
+            )
+        return
     try:
         root = tk.Tk()
         root.report_callback_exception = lambda exc, val, tb: (
@@ -934,20 +1156,23 @@ def main() -> None:
         log.exception("FATAL GUI ERROR")
         raise
     finally:
+        instance.close()
         if HAS_PYSTRAY:
             pass
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--run-transcribe-worker":
+        _reattach_frozen_output()
+        if len(sys.argv) != 4:
+            raise SystemExit("Usage: --run-transcribe-worker REQUEST_JSON RESULT_JSON")
+        raise SystemExit(run_transcription_worker(Path(sys.argv[2]), Path(sys.argv[3])))
+
     # The bundled build re-invokes this same exe as the yt-dlp runner (the
     # yt_dlp module is bundled, so we don't ship a separate ~18 MB yt-dlp.exe).
     if len(sys.argv) >= 2 and sys.argv[1] == "--run-ytdlp":
-        # In a --windowed frozen build sys.stdout/stderr are None; reattach them
-        # to the inherited OS pipe handles so the parent can read yt-dlp output.
-        _pipe = open(1, "w", encoding="utf-8", errors="replace", buffering=1, closefd=False)
-        sys.stdout = _pipe
-        sys.stderr = _pipe
+        _reattach_frozen_output()
         import yt_dlp
         sys.argv = ["yt-dlp", *sys.argv[2:]]
-        sys.exit(yt_dlp.main())
+        raise SystemExit(yt_dlp.main())
     main()
