@@ -765,6 +765,7 @@ def transcribe_faster(
     log: Callable[[str], None] | None = None,
     progress: ProgressCallback | None = None,
     stop_requested: Callable[[], bool] | None = None,
+    result_callback: Callable[[str, list[dict[str, Any]]], None] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     log = log or log_info
     progress = progress or (lambda phase, percent, detail: None)
@@ -874,6 +875,10 @@ def transcribe_faster(
 
     text = " ".join(segment["text"].strip() for segment in segments).strip()
     progress("transcribe", 100.0, "Transcription complete")
+    if result_callback is not None:
+        # Checkpoint while the native model is still alive. Some CTranslate2/CUDA
+        # builds abort while local native objects are released during return.
+        result_callback(text, segments)
     return text, segments
 
 
