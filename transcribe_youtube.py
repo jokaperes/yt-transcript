@@ -271,6 +271,17 @@ def _parse_ytdlp_line(line: str) -> tuple[float | None, str]:
 
 
 DOWNLOAD_CACHE_NAME = ".yt-transcript-cache"
+YTDLP_MAX_ATTEMPTS = 3
+
+
+def _is_retryable_ytdlp_error(details: str) -> bool:
+    """Return whether a fresh extraction can recover from the yt-dlp error.
+
+    YouTube media URLs are short-lived and tied to request context. yt-dlp's
+    regular HTTP retries reuse the rejected URL, so a 403 needs a new extractor
+    pass to obtain a fresh URL.
+    """
+    return "http error 403" in details.lower()
 
 
 def download_cache_dir(output_dir: Path) -> Path:
@@ -306,6 +317,7 @@ def download_audio(
     progress: ProgressCallback | None = None,
     stop_requested: Callable[[], bool] | None = None,
     timeout_seconds: int = DOWNLOAD_TIMEOUT_SECONDS,
+    _attempt: int = 1,
 ) -> tuple[Path, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = download_cache_dir(output_dir)
@@ -431,6 +443,30 @@ def download_audio(
 
     if process.returncode != 0:
         details = "\n".join(output_lines[-80:])
+        if _attempt < YTDLP_MAX_ATTEMPTS and _is_retryable_ytdlp_error(details):
+            retry_without_auth = bool(cookies or cookies_from_browser)
+            if retry_without_auth:
+                message = (
+                    "YouTube rejected the cookie-bound media URL (HTTP 403); "
+                    "retrying this public video without cookies..."
+                )
+            else:
+                message = "YouTube rejected the signed media URL (HTTP 403); retrying with a fresh URL..."
+            log(message)
+            progress("download", None, message)
+            purge_download_cache(output_dir, log)
+            time.sleep(1)
+            return download_audio(
+                url,
+                output_dir,
+                None if retry_without_auth else cookies,
+                None if retry_without_auth else cookies_from_browser,
+                log,
+                progress,
+                stop_requested,
+                timeout_seconds,
+                _attempt + 1,
+            )
         auth_markers = (
             "sign in to confirm",
             "cookies are no longer valid",

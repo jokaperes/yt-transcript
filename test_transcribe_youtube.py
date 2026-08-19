@@ -5,7 +5,9 @@ from pathlib import Path
 from transcribe_youtube import (
     OUTPUT_FORMATS,
     _extract_wheel_dlls,
+    _is_retryable_ytdlp_error,
     download_cache_dir,
+    download_audio,
     ensure_cuda_runtime,
     normalize_runtime_for_platform,
     parse_urls,
@@ -270,6 +272,76 @@ def test_output_formats_constant() -> None:
     assert "srt" in OUTPUT_FORMATS
     assert "vtt" in OUTPUT_FORMATS
     assert "json" in OUTPUT_FORMATS
+
+
+def test_ytdlp_403_is_retried_with_fresh_extraction() -> None:
+    assert _is_retryable_ytdlp_error(
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+    )
+
+
+def test_ytdlp_auth_error_is_not_blindly_retried() -> None:
+    assert not _is_retryable_ytdlp_error(
+        "ERROR: Sign in to confirm you're not a bot. Use --cookies."
+    )
+
+
+def test_download_audio_retries_cookie_403_twice_as_guest(monkeypatch, tmp_path: Path) -> None:
+    import transcribe_youtube as ty
+
+    audio = download_cache_dir(tmp_path) / "video.mp3"
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text(
+        "youtube.com\tFALSE\t/\tFALSE\t0\tVISITOR_INFO1_LIVE\tvisitor\n",
+        encoding="utf-8",
+    )
+    launches: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self, lines: list[str], returncode: int) -> None:
+            self.stdout = iter(f"{line}\n" for line in lines)
+            self.returncode = returncode
+            self._polls = 0
+
+        def poll(self) -> int | None:
+            self._polls += 1
+            return None if self._polls == 1 else self.returncode
+
+    def fake_popen(command, *args, **kwargs):
+        if len(launches) < 2:
+            (download_cache_dir(tmp_path) / "video.info.json").write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            process = FakeProcess(
+                ["ERROR: unable to download video data: HTTP Error 403: Forbidden"],
+                1,
+            )
+        else:
+            audio.write_bytes(b"audio")
+            process = FakeProcess([str(audio.resolve())], 0)
+        launches.append(command)
+        return process
+
+    monkeypatch.setattr(ty, "find_ytdlp", lambda: ["yt-dlp"])
+    monkeypatch.setattr(ty.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ty.time, "sleep", lambda seconds: None)
+
+    result, info = download_audio(
+        "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        tmp_path,
+        str(cookies),
+        None,
+        timeout_seconds=2,
+    )
+
+    assert len(launches) == 3
+    assert "--cookies" in launches[0]
+    assert "--cookies" not in launches[1]
+    assert "--cookies" not in launches[2]
+    assert not (download_cache_dir(tmp_path) / "video.info.json").exists()
+    assert result == audio.resolve()
+    assert info == {}
 
 
 class TestParseUrls:

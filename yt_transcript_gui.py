@@ -47,7 +47,7 @@ try:
 except ImportError:
     HAS_PYSTRAY = False
 
-__version__ = "2.4.5"
+__version__ = "2.4.7"
 
 REPO_OWNER = "jokaperes"
 REPO_NAME = "yt-transcript"
@@ -249,7 +249,14 @@ def run_transcription_worker(request_path: Path, result_path: Path) -> int:
 def _reattach_frozen_output() -> None:
     if not getattr(sys, "frozen", False):
         return
-    pipe = open(1, "w", encoding="utf-8", errors="replace", buffering=1, closefd=False)
+    try:
+        pipe = open(1, "w", encoding="utf-8", errors="replace", buffering=1, closefd=False)
+        # A windowed PyInstaller process can expose fd 1 even when its Windows
+        # handle is invalid. Detect that here instead of letting yt-dlp crash
+        # on its first flush when the runner is launched directly.
+        pipe.flush()
+    except OSError:
+        pipe = open(os.devnull, "w", encoding="utf-8", errors="replace")
     sys.stdout = pipe
     sys.stderr = pipe
 
